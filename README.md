@@ -160,6 +160,15 @@ Uzupełnij `ANTHROPIC_API_KEY` w `.env`, a następnie:
 ```
 Aplikacja: http://localhost:8501. Bez klucza można obejrzeć interfejs w **trybie demo**.
 
+### Visual Studio 2022/2026
+Wymagany pakiet roboczy **„Programowanie w języku Python”** (Visual Studio Installer → Modyfikuj).
+1. **Plik → Otwórz → Folder…** i wskaż katalog `TrackDayAgents` (projekt nie ma pliku `.sln`).
+2. Na pasku narzędzi wybierz środowisko Pythona **`.venv`** (jeśli go nie ma: okno *Środowiska Python* → *Dodaj środowisko* → *Istniejące środowisko* → `.venv\Scripts\python.exe`).
+3. W *Eksploratorze rozwiązań* kliknij prawym przyciskiem `run_app.py` → **Ustaw jako element startowy**.
+4. **F5** (z debugowaniem – działają punkty przerwania w `app.py` i `trackday/`) lub **Ctrl+F5**; otwórz http://localhost:8501.
+
+Testy: okno **Test → Eksplorator testów** (pytest jest skonfigurowany w `pyproject.toml`).
+
 > Windows: jeśli Smart App Control blokuje `streamlit.exe`, uruchamiaj przez `python -m streamlit`.
 > Z tego samego powodu `pandas` jest przypięty do 3.1.0 (w 3.1.1 jedna z bibliotek DLL była blokowana).
 
