@@ -1,0 +1,10 @@
+[project]
+name = "trackday-agents"
+version = "0.1.0"
+description = "TrackDayAgents - system multiagentowy do wyszukiwania i monitorowania torowań motocyklowych (PoC)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = ["llm: testy wywołujące prawdziwy model (wymagają ANTHROPIC_API_KEY)"]

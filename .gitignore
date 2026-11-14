@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.streamlit/secrets.toml
+data/*.db
+data/*.db-journal
+# treść zadania od prowadzącego - nie publikujemy
+2026.11.08_PAAI_Lab2.pdf
+.claude/
+.idea/
+.vscode/

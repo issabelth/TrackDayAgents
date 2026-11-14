@@ -1,0 +1,135 @@
+"""Repozytorium SQLite: wydarzenia, historia liczby miejsc (pod Agenta 4) i przebiegi agenta."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import date, datetime
+from pathlib import Path
+from typing import Iterator
+
+from trackday.models import ScoutReport, TrackDayEvent
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS events (
+    id            TEXT PRIMARY KEY,
+    date_start    TEXT NOT NULL,
+    date_end      TEXT,
+    track         TEXT NOT NULL,
+    organizer     TEXT NOT NULL,
+    price_pln     REAL,
+    seats_left    INTEGER,
+    data          TEXT NOT NULL,          -- pełny JSON TrackDayEvent
+    first_seen    TEXT NOT NULL,
+    last_seen     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_date ON events(date_start);
+
+CREATE TABLE IF NOT EXISTS seat_history (
+    event_id    TEXT NOT NULL REFERENCES events(id),
+    checked_at  TEXT NOT NULL,
+    seats_left  INTEGER,
+    PRIMARY KEY (event_id, checked_at)
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+    run_id      TEXT PRIMARY KEY,
+    started_at  TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    n_events    INTEGER NOT NULL,
+    report      TEXT NOT NULL             -- pełny JSON ScoutReport
+);
+"""
+
+
+class EventRepository:
+    def __init__(self, path: Path | str):
+        self.path = str(path)
+        if self.path != ":memory:":
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._mem_conn = sqlite3.connect(":memory:") if self.path == ":memory:" else None
+        with self._conn() as c:
+            c.executescript(SCHEMA)
+
+    @contextmanager
+    def _conn(self) -> Iterator[sqlite3.Connection]:
+        conn = self._mem_conn or sqlite3.connect(self.path)
+        try:
+            yield conn
+            conn.commit()
+        finally:
+            if self._mem_conn is None:
+                conn.close()
+
+    # ---------------------------------------------------------------- zapis
+    def upsert_events(self, events: list[TrackDayEvent]) -> None:
+        now = datetime.now().isoformat(timespec="seconds")
+        with self._conn() as c:
+            for e in events:
+                c.execute(
+                    """INSERT INTO events (id, date_start, date_end, track, organizer, price_pln, seats_left,
+                                           data, first_seen, last_seen)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(id) DO UPDATE SET
+                         date_end=excluded.date_end, track=excluded.track, organizer=excluded.organizer,
+                         price_pln=excluded.price_pln, seats_left=excluded.seats_left,
+                         data=excluded.data, last_seen=excluded.last_seen""",
+                    (e.id, e.date_start.isoformat(), e.date_end.isoformat() if e.date_end else None,
+                     e.track, e.organizer, e.price_pln, e.seats_left, e.model_dump_json(), now, now),
+                )
+                c.execute("INSERT OR REPLACE INTO seat_history VALUES (?,?,?)", (e.id, now, e.seats_left))
+
+    def save_run(self, report: ScoutReport) -> None:
+        self.upsert_events(report.events)
+        with self._conn() as c:
+            c.execute("INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?)",
+                      (report.run_id, report.started_at.isoformat(timespec="seconds"), report.model,
+                       len(report.events), report.model_dump_json()))
+
+    def clear(self) -> None:
+        with self._conn() as c:
+            c.executescript("DELETE FROM seat_history; DELETE FROM events; DELETE FROM runs;")
+
+    # ---------------------------------------------------------------- odczyt
+    def list_events(self, date_from: date | None = None, date_to: date | None = None,
+                    max_price_pln: float | None = None, tracks: list[str] | None = None,
+                    organizers: list[str] | None = None, only_available: bool = False) -> list[TrackDayEvent]:
+        sql = "SELECT data FROM events WHERE 1=1"
+        args: list = []
+        if date_from:
+            sql += " AND date_start >= ?"
+            args.append(date_from.isoformat())
+        if date_to:
+            sql += " AND date_start <= ?"
+            args.append(date_to.isoformat())
+        if max_price_pln is not None:
+            sql += " AND (price_pln IS NULL OR price_pln <= ?)"
+            args.append(max_price_pln)
+        if tracks:
+            sql += f" AND track IN ({','.join('?' * len(tracks))})"
+            args.extend(tracks)
+        if organizers:
+            sql += f" AND organizer IN ({','.join('?' * len(organizers))})"
+            args.extend(organizers)
+        if only_available:
+            sql += " AND (seats_left IS NULL OR seats_left > 0)"
+        sql += " ORDER BY date_start, track"
+        with self._conn() as c:
+            return [TrackDayEvent.model_validate_json(r[0]) for r in c.execute(sql, args)]
+
+    def distinct(self, column: str) -> list[str]:
+        if column not in ("track", "organizer"):
+            raise ValueError("niedozwolona kolumna")
+        with self._conn() as c:
+            return [r[0] for r in c.execute(f"SELECT DISTINCT {column} FROM events ORDER BY 1")]
+
+    def last_run(self) -> ScoutReport | None:
+        with self._conn() as c:
+            row = c.execute("SELECT report FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()
+        return ScoutReport.model_validate_json(row[0]) if row else None
+
+    def seat_history(self, event_id: str) -> list[tuple[str, int | None]]:
+        with self._conn() as c:
+            return list(c.execute("SELECT checked_at, seats_left FROM seat_history WHERE event_id=? "
+                                  "ORDER BY checked_at", (event_id,)))

@@ -1,0 +1,16 @@
+{
+  "_info": "Lista torów wpisana ręcznie na start (zgodnie z planem PoC). Współrzędne przybliżone - do weryfikacji przez Agenta 2 (Nawigator).",
+  "tracks": [
+    {"name": "Tor Poznań", "country": "PL", "lat": 52.4176, "lon": 16.8089, "aliases": ["poznań", "poznan", "tor poznan", "tor poznań", "tor w poznaniu", "przeźmierowo"]},
+    {"name": "Silesia Ring", "country": "PL", "lat": 50.5303, "lon": 18.0864, "aliases": ["silesia ring", "silesiaring", "kamień śląski", "kamien slaski"]},
+    {"name": "Autodrom Słomczyn", "country": "PL", "lat": 51.9445, "lon": 21.1167, "aliases": ["słomczyn", "slomczyn", "autodrom słomczyn", "autodrom slomczyn"]},
+    {"name": "Tor Łódź", "country": "PL", "lat": 51.7085, "lon": 19.5146, "aliases": ["tor łódź", "tor lodz", "łódź", "lodz"]},
+    {"name": "Autodrom Jastrząb", "country": "PL", "lat": 51.2475, "lon": 20.9640, "aliases": ["jastrząb", "jastrzab", "autodrom jastrząb", "autodrom jastrzab"]},
+    {"name": "Automotodrom Brno", "country": "CZ", "lat": 49.2036, "lon": 16.4442, "aliases": ["brno", "automotodrom brno", "masaryk circuit", "masaryk ring", "tor brno"]},
+    {"name": "Autodrom Most", "country": "CZ", "lat": 50.5197, "lon": 13.6081, "aliases": ["most", "autodrom most"]},
+    {"name": "Slovakia Ring", "country": "SK", "lat": 48.0539, "lon": 17.5653, "aliases": ["slovakia ring", "slovakiaring", "orechová potôň"]},
+    {"name": "Pannonia-Ring", "country": "HU", "lat": 47.3122, "lon": 17.0386, "aliases": ["pannonia ring", "pannonia-ring", "pannoniaring", "pannónia ring"]},
+    {"name": "Hungaroring", "country": "HU", "lat": 47.5789, "lon": 19.2486, "aliases": ["hungaroring", "mogyoród"]},
+    {"name": "Lausitzring", "country": "DE", "lat": 51.5333, "lon": 13.9264, "aliases": ["lausitzring", "eurospeedway lausitz"]}
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "_info": "Zestaw wzorcowy 20 wydarzeń ręcznie odczytanych ze stron w data/samples (data referencyjna 2026-11-14). Używany przez scripts/evaluate.py do pomiaru precyzji ekstrakcji dat, cen i liczby miejsc.",
+  "reference_date": "2026-11-14",
+  "events": [
+    {"organizer": "MotoTor Events", "track": "Tor Poznań",         "date_start": "2027-04-24", "date_end": null,         "price": 690,  "currency": "PLN", "seats_left": 18,   "url": "https://mototor.example/terminy/2027-04-24-poznan"},
+    {"organizer": "MotoTor Events", "track": "Autodrom Słomczyn",  "date_start": "2027-05-08", "date_end": null,         "price": 450,  "currency": "PLN", "seats_left": 6,    "url": "https://mototor.example/terminy/2027-05-08-slomczyn"},
+    {"organizer": "MotoTor Events", "track": "Silesia Ring",       "date_start": "2027-05-22", "date_end": null,         "price": 620,  "currency": "PLN", "seats_left": 2,    "url": "https://mototor.example/terminy/2027-05-22-silesia"},
+    {"organizer": "MotoTor Events", "track": "Tor Poznań",         "date_start": "2027-06-12", "date_end": null,         "price": 690,  "currency": "PLN", "seats_left": 0,    "url": "https://mototor.example/terminy/2027-06-12-poznan"},
+    {"organizer": "MotoTor Events", "track": "Tor Łódź",           "date_start": "2027-06-26", "date_end": null,         "price": 390,  "currency": "PLN", "seats_left": 25,   "url": "https://mototor.example/terminy/2027-06-26-lodz"},
+    {"organizer": "MotoTor Events", "track": "Silesia Ring",       "date_start": "2027-07-10", "date_end": null,         "price": 620,  "currency": "PLN", "seats_left": 11,   "url": "https://mototor.example/terminy/2027-07-10-silesia"},
+    {"organizer": "MotoTor Events", "track": "Tor Poznań",         "date_start": "2027-08-07", "date_end": null,         "price": 720,  "currency": "PLN", "seats_left": 31,   "url": "https://mototor.example/terminy/2027-08-07-poznan"},
+    {"organizer": "MotoTor Events", "track": "Autodrom Jastrząb",  "date_start": "2027-09-18", "date_end": null,         "price": 480,  "currency": "PLN", "seats_left": 14,   "url": "https://mototor.example/terminy/2027-09-18-jastrzab"},
+
+    {"organizer": "Speed Academy",  "track": "Tor Poznań",         "date_start": "2027-05-15", "date_end": null,         "price": 550,  "currency": "PLN", "seats_left": 4,    "url": "https://speedacademy.example/wydarzenia/poznan-15-05-2027"},
+    {"organizer": "Speed Academy",  "track": "Silesia Ring",       "date_start": "2027-06-05", "date_end": "2027-06-06", "price": 1190, "currency": "PLN", "seats_left": 9,    "url": "https://speedacademy.example/wydarzenia/silesia-weekend-2027"},
+    {"organizer": "Speed Academy",  "track": "Autodrom Słomczyn",  "date_start": "2027-07-03", "date_end": null,         "price": 480,  "currency": "PLN", "seats_left": null, "url": "https://speedacademy.example/wydarzenia/slomczyn-03-07-2027"},
+    {"organizer": "Speed Academy",  "track": "Tor Poznań",         "date_start": "2027-07-24", "date_end": null,         "price": 590,  "currency": "PLN", "seats_left": 0,    "url": "https://speedacademy.example/wydarzenia/poznan-24-07-2027"},
+    {"organizer": "Speed Academy",  "track": "Silesia Ring",       "date_start": "2027-08-28", "date_end": null,         "price": 650,  "currency": "PLN", "seats_left": 20,   "url": "https://speedacademy.example/wydarzenia/silesia-28-08-2027"},
+    {"organizer": "Speed Academy",  "track": "Tor Łódź",           "date_start": "2027-09-11", "date_end": null,         "price": 420,  "currency": "PLN", "seats_left": 12,   "url": "https://speedacademy.example/wydarzenia/lodz-11-09-2027"},
+
+    {"organizer": "Track Riders Club", "track": "Automotodrom Brno", "date_start": "2027-05-01", "date_end": "2027-05-02", "price": 289, "currency": "EUR", "seats_left": 7,    "url": "https://trackriders.example/wyjazdy/brno-2027"},
+    {"organizer": "Track Riders Club", "track": "Slovakia Ring",     "date_start": "2027-06-19", "date_end": null,         "price": 199, "currency": "EUR", "seats_left": 15,   "url": "https://trackriders.example/wyjazdy/slovakia-2027"},
+    {"organizer": "Track Riders Club", "track": "Tor Poznań",        "date_start": "2027-07-17", "date_end": null,         "price": 640, "currency": "PLN", "seats_left": 3,    "url": "https://trackriders.example/wyjazdy/poznan-17-07-2027"},
+    {"organizer": "Track Riders Club", "track": "Pannonia-Ring",     "date_start": "2027-08-21", "date_end": "2027-08-22", "price": 349, "currency": "EUR", "seats_left": null, "url": "https://trackriders.example/wyjazdy/pannonia-2027"},
+    {"organizer": "Track Riders Club", "track": "Autodrom Jastrząb", "date_start": "2027-09-04", "date_end": null,         "price": 450, "currency": "PLN", "seats_left": 10,   "url": "https://trackriders.example/wyjazdy/jastrzab-2027"},
+    {"organizer": "Track Riders Club", "track": "Tor Poznań",        "date_start": "2027-10-02", "date_end": null,         "price": null, "currency": null, "seats_left": 40,  "url": "https://trackriders.example/wyjazdy/poznan-10-2027"}
+  ]
+}

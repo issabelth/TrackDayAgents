@@ -1,0 +1,13 @@
+{
+  "_info": "Źródła przeszukiwane przez Agenta 1. 'sample://' = lokalne strony przykładowe (fikcyjni organizatorzy, domena .example) używane jako zestaw wzorcowy. Prawdziwe strony organizatorów można dodać jako kind=web lub wpisać w aplikacji.",
+  "sources": [
+    {"id": "mototor", "name": "MotoTor Events (przykład)", "organizer": "MotoTor Events",
+     "url": "sample://mototor_events.html", "base_url": "https://mototor.example/terminy/", "kind": "sample"},
+    {"id": "speedacademy", "name": "Speed Academy (przykład)", "organizer": "Speed Academy",
+     "url": "sample://speed_academy.html", "base_url": "https://speedacademy.example/", "kind": "sample"},
+    {"id": "trc", "name": "Track Riders Club (przykład)", "organizer": "Track Riders Club",
+     "url": "sample://track_riders_club.html", "base_url": "https://trackriders.example/blog/", "kind": "sample"},
+    {"id": "offtopic", "name": "Strona bez torowań (przykład)", "organizer": null,
+     "url": "sample://off_topic.html", "base_url": "https://kuchnia.example/", "kind": "sample", "enabled": false}
+  ]
+}
