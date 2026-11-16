@@ -82,7 +82,14 @@ with st.sidebar:
                                             icon=":material/search:", width="stretch")
         st.caption("Ctrl+Enter w polu tekstowym też uruchamia wyszukiwanie.")
 
-    demo_clicked = st.button("Tryb demo: wczytaj zestaw wzorcowy (bez LLM)", width="stretch")
+    def load_demo(reference_date: date) -> None:
+        events = golden_as_events()
+        repo.save_run(ScoutReport(run_id="demo", started_at=pd.Timestamp.now().to_pydatetime(),
+                                  model="demo (bez LLM)", reference_date=reference_date, events=events))
+        st.session_state["report"] = repo.last_run()
+        st.toast(f"Wczytano {len(events)} wydarzeń demonstracyjnych.")
+
+    st.button("Tryb demo: wczytaj zestaw wzorcowy (bez LLM)", width="stretch", on_click=load_demo, args=(ref_date,))
 
     st.subheader("3. Filtry")
     today = date.today()
@@ -93,20 +100,15 @@ with st.sidebar:
     group_filter = st.multiselect("Grupy / poziom", all_groups(repo.list_events()),
                                   help="Pokazuje tylko wybory (sesja × grupa) z zaznaczonych grup.")
     only_available = st.checkbox("Tylko z wolnymi miejscami")
-    if st.button("Wyczyść zebrane terminy", width="stretch", help="Lista źródeł zostaje bez zmian."):
+    def clear_events() -> None:
         repo.clear()
         st.session_state.pop("report", None)
-        st.rerun()
+        st.toast("Usunięto zebrane terminy.")
+
+    st.button("Wyczyść zebrane terminy", width="stretch", help="Lista źródeł i torów zostaje bez zmian.",
+              on_click=clear_events)
 
 # ============================================================== AKCJE
-if demo_clicked:
-    events = golden_as_events()
-    repo.save_run(ScoutReport(run_id="demo", started_at=pd.Timestamp.now().to_pydatetime(), model="demo (bez LLM)",
-                              reference_date=ref_date, events=events))
-    st.session_state["report"] = repo.last_run()
-    st.toast(f"Wczytano {len(events)} wydarzeń demonstracyjnych.")
-    st.rerun()
-
 if run_clicked:
     srcs = active_sources
     if not srcs and not pasted.strip():
@@ -184,7 +186,9 @@ with tab_sources:
         },
         alt="Lista stron organizatorów przeszukiwanych przez agenta",
     )
-    if st.button("Zapisz listę", type="primary", icon=":material/save:"):
+    # Zapis w funkcji wywoływanej przy kliknięciu (on_click) - działa przed odświeżeniem strony, więc nie trzeba
+    # st.rerun() (ten przerywa skrypt wyjątkiem, na którym zatrzymuje się debugger VS).
+    def save_sources_cb(edited: pd.DataFrame, saved: list) -> None:
         old_by_url = {s.url: s for s in saved}
         new_sources, errors, seen = [], [], set()
         def cell(v) -> str:
@@ -209,14 +213,17 @@ with tab_sources:
             except SourceError as e:
                 errors.append(f"Wiersz {i}: {e}")
         if errors:
-            for err in errors:
-                st.error(err)
-            st.warning("Nie zapisano zmian - popraw błędy i spróbuj ponownie.")
+            st.session_state["sources_errors"] = errors
         else:
             repo.save_sources(new_sources)
             st.session_state["sources_version"] = st.session_state.get("sources_version", 0) + 1
             st.toast(f"Zapisano listę źródeł ({len(new_sources)}).")
-            st.rerun()
+
+    st.button("Zapisz listę", type="primary", icon=":material/save:", on_click=save_sources_cb, args=(edited, saved))
+    if errs := st.session_state.pop("sources_errors", None):
+        for err in errs:
+            st.error(err)
+        st.warning("Nie zapisano zmian - popraw błędy i spróbuj ponownie.")
 
 with tab_tracks:
     st.subheader("Znane tory")
@@ -258,21 +265,23 @@ with tab_tracks:
         },
         alt="Lista znanych torów z współrzędnymi",
     )
-    if st.button("Zapisz tory", type="primary", icon=":material/save:"):
-        with st.spinner("Odczytuję współrzędne z linków…"):
-            new_tracks, t_errors = tracks_from_rows(
-                edited_tracks.to_dict("records"),
-                known_links={t.maps_url: (t.lat, t.lon) for t in saved_tracks if t.maps_url})
+    def save_tracks_cb(edited: pd.DataFrame, saved: list) -> None:
+        new_tracks, t_errors = tracks_from_rows(
+            edited.to_dict("records"), known_links={t.maps_url: (t.lat, t.lon) for t in saved if t.maps_url})
         if t_errors:
-            for err in t_errors:
-                st.error(err)
-            st.warning("Nie zapisano zmian - popraw błędy i spróbuj ponownie.")
-        else:
-            repo.save_tracks(new_tracks)
-            n = repo.relink_tracks(build_tracks(new_tracks))
-            st.session_state["tracks_version"] = st.session_state.get("tracks_version", 0) + 1
-            st.toast(f"Zapisano tory ({len(new_tracks)}); zaktualizowano terminy: {n}.")
-            st.rerun()
+            st.session_state["tracks_errors"] = t_errors
+            return
+        repo.save_tracks(new_tracks)
+        n = repo.relink_tracks(build_tracks(new_tracks))
+        st.session_state["tracks_version"] = st.session_state.get("tracks_version", 0) + 1
+        st.toast(f"Zapisano tory ({len(new_tracks)}); zaktualizowano terminy: {n}.")
+
+    st.button("Zapisz tory", type="primary", icon=":material/save:", on_click=save_tracks_cb,
+              args=(edited_tracks, saved_tracks))
+    if t_errs := st.session_state.pop("tracks_errors", None):
+        for err in t_errs:
+            st.error(err)
+        st.warning("Nie zapisano zmian - popraw błędy i spróbuj ponownie.")
 
 with tab_events:
     c1, c2, c3, c4 = st.columns(4)
