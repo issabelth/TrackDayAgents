@@ -86,6 +86,92 @@ class AnthropicLLM:
         )
 
 
+def _ollama_base(url: str) -> str:
+    """OLLAMA_HOST bywa podany bez schematu albo jako 0.0.0.0 - normalizujemy do adresu klienta."""
+    url = url.strip().rstrip("/")
+    if "://" not in url:
+        url = "http://" + url
+    return url.replace("://0.0.0.0", "://localhost")
+
+
+class OllamaLLM:
+    """Lokalny model przez Ollamę (darmowy, bez klucza API, dane nie opuszczają komputera).
+
+    Używa endpointu /api/chat z parametrem ``format`` = JSON Schema - Ollama ogranicza
+    generowanie do JSON zgodnego ze schematem, a wynik i tak jest walidowany Pydantic.
+    """
+
+    # Mniejsze fragmenty niż dla Claude: okno kontekstu lokalnego modelu jest ograniczone (num_ctx).
+    max_chunk_chars = 15_000
+
+    def __init__(self, model: str, base_url: str = "http://localhost:11434", num_ctx: int = 16384,
+                 timeout_s: int = 600):
+        self.model = model
+        self.base_url = _ollama_base(base_url)
+        self.num_ctx = num_ctx
+        self.timeout_s = timeout_s
+
+    def extract(self, system: str, user: str, schema: type[T]) -> LLMResult[T]:
+        import requests
+        from pydantic import ValidationError
+
+        body = {
+            "model": self.model,
+            "stream": False,
+            "format": schema.model_json_schema(),
+            "options": {"temperature": 0, "num_ctx": self.num_ctx},
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        }
+        try:
+            resp = requests.post(f"{self.base_url}/api/chat", json=body, timeout=self.timeout_s)
+        except requests.ConnectionError as e:
+            raise LLMError("Brak połączenia z Ollamą - uruchom aplikację Ollama i spróbuj ponownie.") from e
+        except requests.Timeout as e:
+            raise LLMError(f"Model lokalny nie odpowiedział w {self.timeout_s} s.") from e
+        if resp.status_code == 404:
+            raise LLMError(f"Model {self.model} nie jest pobrany w Ollamie (ollama pull {self.model}).")
+        if resp.status_code >= 400:
+            raise LLMError(f"Błąd Ollamy ({resp.status_code}): {resp.text[:200]}")
+        data = resp.json()
+        if data.get("done_reason") == "length":
+            raise LLMError("Odpowiedź modelu lokalnego przekroczyła limit długości (zwiększ num_ctx).")
+        try:
+            parsed = schema.model_validate_json(data["message"]["content"])
+        except (KeyError, ValidationError) as e:
+            raise LLMError("Model lokalny nie zwrócił danych zgodnych ze schematem.") from e
+        return LLMResult(parsed=parsed, model=f"ollama:{self.model}",
+                         input_tokens=data.get("prompt_eval_count", 0),
+                         output_tokens=data.get("eval_count", 0))
+
+
+def list_ollama_models(base_url: str = "http://localhost:11434") -> list[str]:
+    """Nazwy pobranych modeli czatu w Ollamie (bez modeli embeddingowych). Pusta lista, gdy Ollama nie działa."""
+    import requests
+
+    try:
+        tags = requests.get(f"{_ollama_base(base_url)}/api/tags", timeout=3).json()
+    except (requests.RequestException, ValueError):
+        return []
+    names = [m["name"] for m in tags.get("models", [])]
+    return [n for n in names if not any(x in n.lower() for x in ("embed", "bge-", "bge:", "nomic"))]
+
+
+def create_llm(model_id: str, settings, api_key: str | None = None) -> StructuredLLM:
+    """Tworzy klienta modelu na podstawie identyfikatora: 'ollama:<nazwa>' albo model Claude."""
+    from trackday.config import OLLAMA_PREFIX
+
+    if model_id.startswith(OLLAMA_PREFIX):
+        return OllamaLLM(model_id.removeprefix(OLLAMA_PREFIX), base_url=settings.ollama_url,
+                         num_ctx=settings.ollama_num_ctx)
+    return AnthropicLLM(model=model_id, api_key=api_key or settings.api_key, effort=settings.effort)
+
+
+def is_local(model_id: str) -> bool:
+    from trackday.config import OLLAMA_PREFIX
+
+    return model_id.startswith(OLLAMA_PREFIX)
+
+
 class FakeLLM:
     """Atrapa modelu do testów: zwraca odpowiedź z podanej funkcji."""
 

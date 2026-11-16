@@ -1,7 +1,9 @@
 """Testy agenta z PRAWDZIWYM modelem + zapis wyników do docs/wyniki_testow.md.
 
-Uruchomienie (wymaga ANTHROPIC_API_KEY w .env):
-    python scripts/evaluate.py [--model claude-haiku-5-5]
+Uruchomienie:
+    python scripts/evaluate.py --model ollama:qwen2.5:7b      # model lokalny (Ollama) - za darmo
+    python scripts/evaluate.py --model claude-haiku-5-5       # Claude - wymaga ANTHROPIC_API_KEY w .env
+Wynik: docs/wyniki_testow_<model>.md (osobny plik dla każdego modelu - łatwo porównać).
 
 Część A: zestaw wzorcowy (3 strony przykładowe, 20 wydarzeń) - precyzja, pełność, zgodność pól.
 Część B: przypadki szczególne - niejednoznaczne zapytania, treść spoza dziedziny, prompt injection.
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -21,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trackday.agents.event_scout import EventScoutAgent, ScoutInput  # noqa: E402
 from trackday.config import PROJECT_ROOT, get_settings  # noqa: E402
 from trackday.evaluation import evaluate, load_golden  # noqa: E402
-from trackday.llm import AnthropicLLM  # noqa: E402
+from trackday.llm import create_llm, is_local  # noqa: E402
 from trackday.models import ScoutReport  # noqa: E402
 from trackday.sources import load_sources  # noqa: E402
 
@@ -137,7 +140,7 @@ CASES = [
 
 def run(model: str) -> str:
     settings = get_settings()
-    llm = AnthropicLLM(model=model, api_key=settings.api_key, effort=settings.effort)
+    llm = create_llm(model, settings)
     agent = EventScoutAgent(llm, settings=settings)
     sources = {s.id: s for s in load_sources()}
     out: list[str] = [f"# Wyniki testów agenta z modelem `{model}`", "",
@@ -147,7 +150,9 @@ def run(model: str) -> str:
     # --- A. zestaw wzorcowy
     ref, golden = load_golden()
     srcs = [s for s in sources.values() if s.enabled]
+    t0 = time.perf_counter()
     rep = agent.run(ScoutInput(sources=srcs, reference_date=ref))
+    elapsed = time.perf_counter() - t0
     res = evaluate(rep.events, golden)
     out += ["## A. Zestaw wzorcowy (20 wydarzeń, 3 strony organizatorów)", "",
             "| Metryka | Wynik |", "|---|---|",
@@ -157,7 +162,8 @@ def run(model: str) -> str:
     for f in res.field_correct:
         out.append(f"| Zgodność pola `{f}` | {res.field_accuracy(f):.0%} |")
     out += [f"| Usunięte duplikaty | {rep.duplicates_removed} |",
-            f"| Tokeny (wej./wyj.) | {rep.input_tokens} / {rep.output_tokens} |", ""]
+            f"| Tokeny (wej./wyj.) | {rep.input_tokens} / {rep.output_tokens} |",
+            f"| Czas (3 strony) | {elapsed:.0f} s |", ""]
     for title, items in (("Brakujące", res.missing), ("Nadmiarowe", res.unexpected),
                          ("Niezgodności pól", res.mismatches), ("Ostrzeżenia agenta", rep.warnings)):
         if items:
@@ -184,9 +190,10 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--model", default=get_settings().model)
     args = p.parse_args()
-    if not get_settings().api_key:
-        sys.exit("Brak ANTHROPIC_API_KEY - ustaw go w pliku .env (zob. .env.example).")
+    if not is_local(args.model) and not get_settings().api_key:
+        sys.exit("Brak ANTHROPIC_API_KEY - ustaw go w pliku .env albo użyj modelu lokalnego: --model ollama:qwen2.5:7b")
     md = run(args.model)
-    path = PROJECT_ROOT / "docs" / "wyniki_testow.md"
+    safe = "".join(c if c.isalnum() or c in "-." else "_" for c in args.model)
+    path = PROJECT_ROOT / "docs" / f"wyniki_testow_{safe}.md"
     path.write_text(md, encoding="utf-8")
     print(f"\nZapisano: {path}")

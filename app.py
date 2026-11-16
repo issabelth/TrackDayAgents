@@ -12,9 +12,9 @@ import streamlit as st
 
 from trackday.agents.event_scout import EventScoutAgent, ScoutInput
 from trackday.agents.prompts import EVENT_SCOUT_SYSTEM
-from trackday.config import AVAILABLE_MODELS, get_settings
+from trackday.config import CLAUDE_MODELS, OLLAMA_PREFIX, get_settings
 from trackday.evaluation import golden_as_events
-from trackday.llm import AnthropicLLM
+from trackday.llm import create_llm, is_local, list_ollama_models
 from trackday.models import ExtractionResult, ScoutReport, TrackDayEvent
 from trackday.sources import SourceError, load_sources, make_source
 from trackday.storage.db import EventRepository
@@ -29,6 +29,13 @@ def get_repo(path: str) -> EventRepository:
     repo = EventRepository(path)
     repo.init_sources(load_sources())  # tylko przy pierwszym uruchomieniu
     return repo
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def model_options(ollama_url: str) -> dict[str, str]:
+    """Modele lokalne (Ollama, darmowe) + modele Claude (płatne API)."""
+    local = {f"{OLLAMA_PREFIX}{m}": f"{m} (lokalnie, za darmo)" for m in list_ollama_models(ollama_url)}
+    return local | CLAUDE_MODELS
 
 
 repo = get_repo(str(settings.db_path))
@@ -52,9 +59,15 @@ with st.sidebar:
                               placeholder="np. treść posta z Facebooka z terminem torowania")
 
         st.subheader("2. Model")
-        model = st.selectbox("Model językowy", list(AVAILABLE_MODELS), format_func=AVAILABLE_MODELS.get,
-                             index=list(AVAILABLE_MODELS).index(settings.model) if settings.model in AVAILABLE_MODELS else 0)
-        api_key = settings.api_key or st.text_input("ANTHROPIC_API_KEY", type="password",
+        models = model_options(settings.ollama_url)
+        model_ids = list(models)
+        model = st.selectbox("Model językowy", model_ids, format_func=models.get,
+                             index=model_ids.index(settings.model) if settings.model in model_ids else 0,
+                             help="Modele lokalne działają przez Ollamę: bez klucza i bez opłat. "
+                                  "Modele Claude wymagają klucza API (płatne za tokeny).")
+        if not any(is_local(m) for m in model_ids):
+            st.caption("Nie wykryto Ollamy - uruchom aplikację Ollama, by używać modeli lokalnych.")
+        api_key = settings.api_key or st.text_input("ANTHROPIC_API_KEY (tylko dla modeli Claude)", type="password",
                                                     help="Klucz nie jest zapisywany. Najlepiej ustaw go w pliku .env.")
         ref_date = st.date_input("Data referencyjna", value=date.today(),
                                  help="Względem niej agent uzupełnia brakujący rok w datach.")
@@ -92,15 +105,16 @@ if run_clicked:
         msg = "Brak aktywnych źródeł - dodaj stronę w zakładce Źródła lub wklej treść."
         st.error(msg, icon=":material/error:")
         st.toast(msg, icon=":material/error:")
-    elif not api_key:
+    elif not api_key and not is_local(model):
         msg = ("Agent nie wystartował: brak klucza ANTHROPIC_API_KEY. Wpisz go w pole „ANTHROPIC_API_KEY” "
-               "w panelu bocznym albo zapisz w pliku .env (wzór: .env.example) i uruchom aplikację ponownie.")
+               "w panelu bocznym albo zapisz w pliku .env (wzór: .env.example) i uruchom aplikację ponownie. "
+               "Możesz też wybrać model lokalny (Ollama) - działa za darmo, bez klucza.")
         st.error(msg, icon=":material/key_off:")
         st.toast("Brak klucza ANTHROPIC_API_KEY", icon=":material/key_off:")
     else:
-        agent = EventScoutAgent(AnthropicLLM(model=model, api_key=api_key, effort=settings.effort),
-                                settings=settings, repository=repo)
-        with st.status("Agent przeszukuje źródła…", expanded=True) as status:
+        agent = EventScoutAgent(create_llm(model, settings, api_key=api_key), settings=settings, repository=repo)
+        label = "Agent przeszukuje źródła…" + (" (model lokalny - może to potrwać kilka minut)" if is_local(model) else "")
+        with st.status(label, expanded=True) as status:
             st.write(f"Źródła: {', '.join(s.name for s in srcs) or '-'}" + (" + wklejony tekst" if pasted.strip() else ""))
             report = agent.run(ScoutInput(sources=srcs, pasted_text=pasted or None, reference_date=ref_date))
             for step in report.steps:

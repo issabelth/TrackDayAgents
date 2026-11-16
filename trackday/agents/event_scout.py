@@ -134,7 +134,7 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
             return sr, []
 
         # 3. Ekstrakcja przez LLM (fragmentami, jeśli treść jest długa)
-        chunks = split_into_chunks(text, self.settings.max_chunk_chars)
+        chunks = split_into_chunks(text, getattr(self.llm, "max_chunk_chars", None) or self.settings.max_chunk_chars)
         sr.chunks = len(chunks)
         extracted: list[ExtractedEvent] = []
         for i, chunk in enumerate(chunks, start=1):

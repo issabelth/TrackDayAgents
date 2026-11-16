@@ -67,12 +67,22 @@ Pełna treść: [trackday/agents/prompts.py](trackday/agents/prompts.py). Najwa�
   cena w PLN, identyfikator, lista uwag walidacji).
 
 ### Komunikacja z modelem językowym
-- Oficjalne SDK **Anthropic** (`anthropic`), `client.messages.parse(...)` z `output_format=ExtractionResult` –
-  **structured outputs**: model musi zwrócić JSON zgodny ze schematem, SDK od razu waliduje go Pydantic.
-- Model domyślny: **Claude Haiku 5.5** (`claude-haiku-5-5`) – zgodnie z projektem tani model wystarcza do ekstrakcji;
-  w UI można przełączyć na Claude Sonnet 5.5. Parametr `effort=low` (konfigurowalny w `.env`).
-- Warstwa `StructuredLLM` ([trackday/llm.py](trackday/llm.py)) oddziela agenta od dostawcy – w testach używana jest
-  atrapa `FakeLLM`, a błędy API (klucz, limity, odmowa, przekroczenie długości) są zamieniane na czytelne komunikaty.
+Agent obsługuje dwóch dostawców modelu – wybór w panelu bocznym:
+
+| | **Model lokalny – Ollama** (domyślny bez klucza) | **Claude – Anthropic API** |
+|---|---|---|
+| Koszt | **za darmo**, bez klucza API | płatne za tokeny (osobno od subskrypcji Claude) |
+| Modele | pobrane w Ollamie, np. `qwen2.5:7b` (domyślny), `gemma4:e4b`, Bielik | `claude-haiku-5-5` (domyślny), `claude-sonnet-5-5` |
+| Wymuszenie formatu | `/api/chat` z `format` = JSON Schema `ExtractionResult` | `client.messages.parse(..., output_format=ExtractionResult)` (structured outputs) |
+| Prywatność | treść stron nie opuszcza komputera | treść wysyłana do API |
+| Jakość / czas | słabsza (model 7B), kilkanaście–kilkadziesiąt s na stronę | lepsza, kilka s na stronę |
+
+- W obu przypadkach wynik jest dodatkowo walidowany Pydantic i regułami biznesowymi.
+- Dla modeli lokalnych treść dzielona jest na mniejsze fragmenty (15 tys. znaków), a okno kontekstu ustawiane
+  na `num_ctx=16384` (zmienna `TRACKDAY_OLLAMA_NUM_CTX`).
+- Warstwa `StructuredLLM` ([trackday/llm.py](trackday/llm.py)) oddziela agenta od dostawcy (`create_llm`) – w testach
+  używana jest atrapa `FakeLLM`, a błędy (brak klucza, Ollama niewłączona, model niepobrany, limity, odmowa,
+  przekroczenie długości) są zamieniane na czytelne komunikaty.
 
 ### Narzędzia agenta (kolejne kroki)
 | Krok | Narzędzie | Co robi |
@@ -146,7 +156,8 @@ Treść stron jest niezaufana (pośredni prompt injection), dlatego:
 
 ## 5. Uruchomienie
 
-Wymagania: Python 3.11+ (testowane na 3.15), klucz API Anthropic.
+Wymagania: Python 3.11+ (testowane na 3.15) oraz **jedno z dwóch**: [Ollama](https://ollama.com) z pobranym modelem
+(za darmo, np. `ollama pull qwen2.5:7b`) albo klucz API Anthropic.
 
 ```bash
 python -m venv .venv
@@ -157,7 +168,7 @@ python -m venv .venv
 ```bash
 copy .env.example .env
 ```
-Uzupełnij `ANTHROPIC_API_KEY` w `.env`, a następnie:
+Opcjonalnie uzupełnij `ANTHROPIC_API_KEY` w `.env` (tylko dla modeli Claude), a następnie:
 ```bash
 .venv\Scripts\python.exe -m streamlit run app.py
 ```
@@ -189,9 +200,10 @@ Wynik: **30 testów – wszystkie zaliczone.**
 karty, tekst blogowy) + 11 przypadków szczególnych (brak roku, przedział cen, „ostatnie miejsca”, nieprecyzyjna
 data, treść spoza dziedziny, prompt injection, tekst po angielsku, próba zmiany roli…):
 ```bash
-.venv\Scripts\python.exe scripts\evaluate.py
+.venv\Scripts\python.exe scripts\evaluate.py --model ollama:qwen2.5:7b
 ```
-Skrypt zapisuje tabelę wyników do `docs/wyniki_testow.md` (precyzja, pełność, zgodność pól, wynik każdego przypadku).
+(albo `--model claude-haiku-5-5` z kluczem API). Skrypt zapisuje tabelę wyników do `docs/wyniki_testow_<model>.md`
+(precyzja, pełność, zgodność pól, czas, wynik każdego przypadku) – osobny plik dla każdego modelu, by łatwo je porównać.
 
 ## 7. Ograniczenia pierwszej wersji
 
@@ -228,7 +240,7 @@ data/sources.json           # lista źródeł
 data/tracks.json            # lista torów ze współrzędnymi
 data/samples/               # strony przykładowe (zestaw testowy)
 tests/                      # testy pytest + tests/golden/expected_events.json
-scripts/evaluate.py         # testy z prawdziwym modelem -> docs/wyniki_testow.md
+scripts/evaluate.py         # testy z prawdziwym modelem -> docs/wyniki_testow_<model>.md
 docs/testy.md               # plan i opis testów
 ```
 
