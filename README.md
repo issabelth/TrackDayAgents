@@ -93,7 +93,7 @@ Agent obsługuje dwóch dostawców modelu – wybór w panelu bocznym:
 | 2 | `html_to_text` | usuwa skrypty, style i **ukryte elementy**, zamienia tabele na wiersze, linki na `tekst [link: URL]` |
 | 3 | `detect_injection` | heurystyczny detektor poleceń dla AI (PL/EN) – ostrzeżenie w raporcie |
 | 4 | `llm_extract` | wywołanie modelu (dzieli długie strony na fragmenty) |
-| 5 | `validate` | Pydantic + reguły: poprawne daty, linki tylko http(s) i z domeny organizatora, ceny ≥ 0, spójność miejsc, normalizacja toru (`data/tracks.json`), przeliczenie walut |
+| 5 | `validate` | Pydantic + reguły: poprawne daty, linki tylko http(s) i z domeny organizatora, ceny ≥ 0, spójność miejsc, normalizacja toru (lista torów z zakładki **Tory**, zapisana w SQLite), przeliczenie walut |
 | 6 | `deduplicate` | łączy to samo wydarzenie z różnych źródeł (organizator + tor + data), priorytet ma strona organizatora |
 | 7 | `sqlite` | zapis wydarzeń, historii liczby miejsc (pod Agenta 4) i raportu przebiegu |
 
@@ -108,7 +108,7 @@ flowchart TD
         F[fetch_source<br/>requests / sample://] --> C[html_to_text<br/>usuwa ukryte elementy]
         C --> S[detect_injection + sanitize]
         S --> L[llm_extract<br/>treść jako dokument niezaufany]
-        L --> V[validate + normalize<br/>Pydantic, tracks.json]
+        L --> V[validate + normalize<br/>Pydantic, lista torów]
         V --> D[deduplicate]
     end
 
@@ -157,6 +157,11 @@ Treść stron jest niezaufana (pośredni prompt injection), dlatego:
   pokazuje tylko wybory z zaznaczonych grup (razem z „Tylko z wolnymi miejscami” – tylko grupy z miejscami).
   Pod listą: karta szczegółów wydarzenia (`st.metric`) i eksport JSON.
 - **Mapa:** tory z wynikami (`st.map`).
+- **Tory:** lista znanych torów edytowana w tabeli: nazwa, kraj, **współrzędne** (format z Map Google, np.
+  `52.4176, 16.8089`; działa też `52,4176; 16,8089`) i inne nazwy używane przez organizatorów. Zakładka podpowiada
+  tory z zebranych terminów, których brakuje na liście. Po zapisaniu zebrane terminy są dopasowywane ponownie
+  (nazwa toru i współrzędne – od razu widać je na mapie). Przy pierwszym uruchomieniu lista jest wypełniana z
+  `data/tracks.json`.
 - **Raport agenta:** wynik per źródło, ostrzeżenia (w tym wykryty prompt injection), ślad kroków i zużycie tokenów.
 - **O agencie:** rola, prompt systemowy i schemat JSON wyniku.
 - **Obserwowane / Powiadomienia** i czat – miejsce na kolejnych agentów (nieaktywne).
@@ -201,7 +206,7 @@ Szczegóły: [docs/testy.md](docs/testy.md).
 ```bash
 .venv\Scripts\python.exe -m pytest
 ```
-Wynik: **56 testów – wszystkie zaliczone.**
+Wynik: **70 testów – wszystkie zaliczone.**
 
 **Testy z prawdziwym modelem** – zestaw wzorcowy 20 wydarzeń (3 strony organizatorów, różne formaty: tabela,
 karty, tekst blogowy) + 11 przypadków szczególnych (brak roku, przedział cen, „ostatnie miejsca”, nieprecyzyjna
@@ -236,7 +241,7 @@ godzina rozpoczęcia i nitka REVERS rozróżniają dwa wydarzenia tego samego dn
   dacie, torze i organizatorze (inna pisownia organizatora = osobny wpis).
 - **Ochrona przed prompt injection** jest heurystyczna – detektor wzorców nie wyłapie wszystkiego; główną ochroną
   jest traktowanie treści jako danych + walidacja wyniku (JEV/BASAL w kolejnych etapach).
-- **Kursy walut** są orientacyjne (stałe w kodzie), współrzędne torów wpisane ręcznie i przybliżone.
+- **Kursy walut** są orientacyjne (stałe w kodzie), współrzędne torów wpisuje użytkownik (domyślne – przybliżone).
 - Brak harmonogramu (APScheduler), orkiestracji LangGraph, logowania Google i powiadomień – kolejne laboratoria.
 
 ## 8. Struktura projektu i dalszy rozwój
@@ -256,7 +261,7 @@ trackday/
   storage/db.py             # SQLite
   evaluation.py             # porównanie z zestawem wzorcowym
 data/sources.json           # lista źródeł
-data/tracks.json            # lista torów ze współrzędnymi
+data/tracks.json            # domyślna lista torów ze współrzędnymi (potem edycja w zakładce Tory)
 data/samples/               # strony przykładowe (zestaw testowy)
 tests/                      # testy pytest + tests/golden/expected_events.json
 scripts/evaluate.py         # testy z prawdziwym modelem -> docs/wyniki_testow_<model>.md

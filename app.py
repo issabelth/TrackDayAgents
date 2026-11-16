@@ -18,6 +18,7 @@ from trackday.evaluation import golden_as_events
 from trackday.llm import create_llm, is_local, list_ollama_models
 from trackday.models import ExtractionResult, ScoutReport, TrackDayEvent
 from trackday.sources import SourceError, load_sources, make_source
+from trackday.tools.normalize import TRACK_COLUMNS, build_tracks, default_track_defs, match_track, tracks_from_rows
 from trackday.views import all_groups, group_by_day
 from trackday.storage.db import EventRepository
 
@@ -30,6 +31,7 @@ settings = get_settings()
 def get_repo(path: str) -> EventRepository:
     repo = EventRepository(path)
     repo.init_sources(load_sources())  # tylko przy pierwszym uruchomieniu
+    repo.init_tracks(default_track_defs())
     return repo
 
 
@@ -139,8 +141,9 @@ events = repo.list_events(date_from=d_from, date_to=d_to, max_price_pln=None if 
 days = group_by_day(events, set(group_filter) or None, only_available)
 events = [e for d in days for e in d.events]  # po filtrze grup
 
-tab_events, tab_map, tab_sources, tab_report, tab_agent, tab_next = st.tabs(
-    ["📅 Terminy", "🗺️ Mapa", "🌐 Źródła", "🧾 Raport agenta", "🤖 O agencie", "🔜 Obserwowane / Powiadomienia"])
+tab_events, tab_map, tab_sources, tab_tracks, tab_report, tab_agent, tab_next = st.tabs(
+    ["📅 Terminy", "🗺️ Mapa", "🌐 Źródła", "🏁 Tory", "🧾 Raport agenta", "🤖 O agencie",
+     "🔜 Obserwowane / Powiadomienia"])
 
 with tab_sources:
     st.subheader("Stała lista stron przeszukiwanych przez agenta")
@@ -213,6 +216,50 @@ with tab_sources:
             st.toast(f"Zapisano listę źródeł ({len(new_sources)}).")
             st.rerun()
 
+with tab_tracks:
+    st.subheader("Znane tory")
+    st.caption("Agent dopasowuje nazwę toru z ogłoszenia do tej listy (także po *innych nazwach*) i bierze stąd "
+               "współrzędne do mapy. Dodaj wiersz (+ pod tabelą), wpisz nazwę i współrzędne - najprościej kliknąć "
+               "prawym przyciskiem tor w Mapach Google i skopiować liczby, np. `52.4176, 16.8089`. "
+               "Po zapisaniu zebrane już terminy są dopasowywane ponownie.")
+    saved_tracks = repo.list_tracks()
+    known = build_tracks(saved_tracks)
+    missing = sorted({e.track for e in repo.list_events() if match_track(e.track, known) is None})
+    if missing:
+        st.info("Tory z zebranych terminów, których nie ma na liście (brak na mapie): **"
+                + "**, **".join(missing) + "**. Dodaj je poniżej.", icon=":material/location_off:")
+    tracks_df = pd.DataFrame(
+        [dict(zip(TRACK_COLUMNS, (t.name, t.country or "", f"{t.lat:.5f}, {t.lon:.5f}", ", ".join(t.aliases))))
+         for t in saved_tracks],
+        columns=TRACK_COLUMNS,
+    ).astype(str)
+    edited_tracks = st.data_editor(
+        tracks_df,
+        key=f"tracks_editor_{st.session_state.get('tracks_version', 0)}",
+        num_rows="dynamic", hide_index=True,
+        column_config={
+            "Nazwa": st.column_config.TextColumn(required=True, help="Nazwa wyświetlana w terminach i na mapie"),
+            "Kraj": st.column_config.TextColumn(width="small", help="Kod kraju, np. PL, CZ (opcjonalnie)"),
+            "Współrzędne (szer., dł.)": st.column_config.TextColumn(
+                required=True, help="Szerokość i długość geograficzna, np. 52.4176, 16.8089 (format z Map Google)"),
+            "Inne nazwy (po przecinku)": st.column_config.TextColumn(
+                width="large", help="Nazwy używane przez organizatorów, np. „Poznań, Tor Poznań, Przeźmierowo”"),
+        },
+        alt="Lista znanych torów z współrzędnymi",
+    )
+    if st.button("Zapisz tory", type="primary", icon=":material/save:"):
+        new_tracks, t_errors = tracks_from_rows(edited_tracks.to_dict("records"))
+        if t_errors:
+            for err in t_errors:
+                st.error(err)
+            st.warning("Nie zapisano zmian - popraw błędy i spróbuj ponownie.")
+        else:
+            repo.save_tracks(new_tracks)
+            n = repo.relink_tracks(build_tracks(new_tracks))
+            st.session_state["tracks_version"] = st.session_state.get("tracks_version", 0) + 1
+            st.toast(f"Zapisano tory ({len(new_tracks)}); zaktualizowano terminy: {n}.")
+            st.rerun()
+
 with tab_events:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Dni z terminami", len(days))
@@ -267,7 +314,7 @@ with tab_map:
         st.info("Brak torów ze współrzędnymi.")
     else:
         st.map(pts.drop_duplicates(), size=4000)
-        st.caption("Współrzędne z ręcznej listy torów (data/tracks.json). Odległość od użytkownika policzy Agent 2.")
+        st.caption("Współrzędne z listy torów (zakładka „Tory”). Odległość od użytkownika policzy Agent 2.")
 
 with tab_report:
     if report is None:

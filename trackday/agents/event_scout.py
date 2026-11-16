@@ -36,7 +36,7 @@ from trackday.models import (
 from trackday.storage.db import EventRepository
 from trackday.tools.fetch import FetchError, fetch_source, fetch_url
 from trackday.tools.html_clean import extract_links, html_to_text, split_into_chunks
-from trackday.tools.normalize import deduplicate, event_id, match_track
+from trackday.tools.normalize import build_tracks, deduplicate, default_track_defs, event_id, match_track
 from trackday.tools.variants import extract_variants
 from trackday.tools.security import detect_injection, same_site, sanitize_text, wrap_untrusted
 
@@ -80,6 +80,11 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
             model=self.llm.model,
             reference_date=data.reference_date,
         )
+        # Lista znanych torów: z bazy (edytowana w zakładce „Tory”), a bez bazy - z data/tracks.json
+        self._tracks = None
+        if self.repository is not None:
+            self.repository.init_tracks(default_track_defs())
+            self._tracks = build_tracks(self.repository.list_tracks())
         sources = [s for s in data.sources if s.enabled]
         if data.pasted_text and data.pasted_text.strip():
             sources.append(Source(id="pasted", name="Tekst wklejony przez użytkownika", url="text://pasted",
@@ -303,7 +308,7 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
 
         if not ev.track or not ev.track.strip():
             return None, "brak nazwy toru"
-        track = match_track(ev.track)
+        track = match_track(ev.track, getattr(self, "_tracks", None))
         if track is None:
             issues.append("tor spoza listy znanych torów")
 

@@ -11,7 +11,7 @@ from datetime import date
 from functools import lru_cache
 
 from trackday.config import DATA_DIR
-from trackday.models import TrackDayEvent
+from trackday.models import TrackDayEvent, TrackDef
 
 
 @dataclass(frozen=True)
@@ -30,21 +30,32 @@ def _fold(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+def default_track_defs() -> list[TrackDef]:
+    """Tory domyślne z pliku - przy pierwszym uruchomieniu trafiają do bazy, potem edytuje je użytkownik."""
+    raw = json.loads((DATA_DIR / "tracks.json").read_text(encoding="utf-8"))
+    return [TrackDef.model_validate(t) for t in raw["tracks"]]
+
+
+def build_tracks(defs: list[TrackDef]) -> tuple[Track, ...]:
+    return tuple(Track(d.name, d.country or "", d.lat, d.lon,
+                       tuple(a for a in (_fold(x) for x in d.aliases + [d.name]) if a))
+                 for d in defs)
+
+
 @lru_cache(maxsize=1)
 def load_tracks() -> tuple[Track, ...]:
-    raw = json.loads((DATA_DIR / "tracks.json").read_text(encoding="utf-8"))
-    return tuple(
-        Track(t["name"], t["country"], t["lat"], t["lon"], tuple(_fold(a) for a in t["aliases"] + [t["name"]]))
-        for t in raw["tracks"]
-    )
+    return build_tracks(default_track_defs())
 
 
-def match_track(name: str) -> Track | None:
-    """Dopasowuje nazwę toru z treści do znanej listy torów (dokładnie lub po fragmencie)."""
+def match_track(name: str, tracks: tuple[Track, ...] | None = None) -> Track | None:
+    """Dopasowuje nazwę toru z treści do listy znanych torów (dokładnie lub po fragmencie).
+
+    ``tracks`` - lista torów (np. z bazy, edytowana przez użytkownika); domyślnie tory z data/tracks.json.
+    """
     folded = _fold(name)
     if not folded:
         return None
-    tracks = load_tracks()
+    tracks = load_tracks() if tracks is None else tracks
     for t in tracks:
         if folded in t.aliases:
             return t
@@ -111,3 +122,57 @@ def deduplicate(events: list[TrackDayEvent], own_source: dict[str, str]) -> tupl
         group[idx] = merged
     events_out = [e for group in by_key.values() for e in group]
     return sorted(events_out, key=lambda e: (e.date_start, e.track, e.name)), removed
+
+
+_NUM = r"[-+]?\d+(?:[.,]\d+)?"
+
+
+def parse_coords(text: str) -> tuple[float, float]:
+    """Współrzędne wpisane przez użytkownika -> (szerokość, długość).
+
+    Przyjmuje format kopiowany z Map Google („52.4176, 16.8089”), a także „52,4176; 16,8089”
+    i „52.4176 16.8089”. Zgłasza ValueError przy błędnym formacie lub wartościach spoza zakresu.
+    """
+    text = (text or "").strip()
+    m = re.fullmatch(rf"\(?\s*({_NUM})\s*[,; ]\s*({_NUM})\s*\)?", text)
+    if not m:
+        raise ValueError(f"„{text}” - wpisz dwie liczby: szerokość i długość, np. 52.4176, 16.8089")
+    lat, lon = (float(x.replace(",", ".")) for x in m.groups())
+    if not -90 <= lat <= 90 or not -180 <= lon <= 180:
+        raise ValueError(f"„{text}” - szerokość musi być w zakresie -90..90, długość -180..180")
+    return lat, lon
+
+
+TRACK_COLUMNS = ["Nazwa", "Kraj", "Współrzędne (szer., dł.)", "Inne nazwy (po przecinku)"]
+
+
+def _cell(v) -> str:
+    if v is None or (isinstance(v, float) and v != v):  # None / NaN z nowych wierszy tabeli
+        return ""
+    return str(v).strip()
+
+
+def tracks_from_rows(rows: list[dict]) -> tuple[list[TrackDef], list[str]]:
+    """Wiersze tabeli z zakładki „Tory” -> (lista torów, błędy). Puste wiersze są pomijane."""
+    tracks: list[TrackDef] = []
+    errors: list[str] = []
+    names: set[str] = set()
+    for i, row in enumerate(rows, start=1):
+        name, coords = _cell(row.get(TRACK_COLUMNS[0])), _cell(row.get(TRACK_COLUMNS[2]))
+        if not name and not coords:
+            continue
+        if not name:
+            errors.append(f"Wiersz {i}: brak nazwy toru.")
+            continue
+        if _fold(name) in names:
+            errors.append(f"Wiersz {i}: tor „{name}” jest już na liście.")
+            continue
+        names.add(_fold(name))
+        try:
+            lat, lon = parse_coords(coords)
+            aliases = [a.strip() for a in _cell(row.get(TRACK_COLUMNS[3])).split(",") if a.strip()]
+            tracks.append(TrackDef(name=name, country=_cell(row.get(TRACK_COLUMNS[1])) or None,
+                                   lat=lat, lon=lon, aliases=aliases))
+        except ValueError as err:  # także błędy walidacji Pydantic
+            errors.append(f"Wiersz {i} ({name}): {str(err).splitlines()[0]}")
+    return tracks, errors

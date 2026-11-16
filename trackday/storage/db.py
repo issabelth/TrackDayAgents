@@ -9,7 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Iterator
 
-from trackday.models import ScoutReport, Source, TrackDayEvent
+from trackday.models import ScoutReport, Source, TrackDayEvent, TrackDef
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS sources (
     id          TEXT PRIMARY KEY,
     position    INTEGER NOT NULL,
     data        TEXT NOT NULL             -- pełny JSON Source
+);
+
+-- Lista znanych torów z współrzędnymi (edytowana w zakładce "Tory")
+CREATE TABLE IF NOT EXISTS tracks (
+    position    INTEGER PRIMARY KEY,
+    data        TEXT NOT NULL             -- pełny JSON TrackDef
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -125,6 +131,47 @@ class EventRepository:
             c.executemany("INSERT INTO sources VALUES (?,?,?)",
                           [(s.id, i, s.model_dump_json()) for i, s in enumerate(sources)])
             c.execute("INSERT OR REPLACE INTO meta VALUES ('sources_initialized', '1')")
+
+    # ---------------------------------------------------------------- tory
+    def list_tracks(self) -> list[TrackDef]:
+        with self._conn() as c:
+            return [TrackDef.model_validate_json(r[0]) for r in c.execute("SELECT data FROM tracks ORDER BY position")]
+
+    def save_tracks(self, tracks: list[TrackDef]) -> None:
+        with self._conn() as c:
+            c.execute("DELETE FROM tracks")
+            c.executemany("INSERT INTO tracks VALUES (?,?)", [(i, t.model_dump_json()) for i, t in enumerate(tracks)])
+            c.execute("INSERT OR REPLACE INTO meta VALUES ('tracks_initialized', '1')")
+
+    def init_tracks(self, defaults: list[TrackDef]) -> None:
+        """Przy pierwszym uruchomieniu wpisuje tory domyślne (data/tracks.json)."""
+        with self._conn() as c:
+            done = c.execute("SELECT 1 FROM meta WHERE key='tracks_initialized'").fetchone()
+        if not done:
+            self.save_tracks(defaults)
+
+    def relink_tracks(self, tracks) -> int:
+        """Ponownie dopasowuje tory zapisanych terminów do aktualnej listy torów (nazwa, współrzędne).
+        Zwraca liczbę zmienionych terminów."""
+        from trackday.tools.normalize import match_track
+
+        unknown = "tor spoza listy znanych torów"
+        changed = []
+        for e in self.list_events():
+            t = match_track(e.track, tracks)
+            if t:
+                upd = {"track": t.name, "track_known": True, "lat": t.lat, "lon": t.lon,
+                       "issues": [i for i in e.issues if i != unknown]}
+            else:
+                upd = {"track_known": False, "lat": None, "lon": None,
+                       "issues": e.issues if unknown in e.issues else e.issues + [unknown]}
+            new = e.model_copy(update=upd)
+            if new != e:
+                changed.append(new)
+        with self._conn() as c:
+            for e in changed:
+                c.execute("UPDATE events SET track=?, data=? WHERE id=?", (e.track, e.model_dump_json(), e.id))
+        return len(changed)
 
     def init_sources(self, defaults: list[Source]) -> None:
         """Przy pierwszym uruchomieniu wpisuje źródła domyślne. Później nie nadpisuje listy,
