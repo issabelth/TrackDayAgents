@@ -45,6 +45,7 @@ class Settings:
     max_chunk_chars: int = 40_000
     max_pasted_chars: int = 60_000
     http_timeout_s: int = 15
+    crawl_delay_s: float = 0.5  # przerwa między pobraniami kolejnych podstron (uprzejmość wobec serwera)
     user_agent: str = "TrackDayAgents/0.1 (PoC; projekt studencki)"
 
 

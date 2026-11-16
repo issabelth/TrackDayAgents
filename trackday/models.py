@@ -74,6 +74,12 @@ class Source(BaseModel):
     )
     kind: Literal["web", "sample", "text"] = "web"
     enabled: bool = True
+    detail_link_pattern: str | None = Field(
+        default=None,
+        description="Tryb 'lista -> podstrony': wyrażenie regularne (lub zwykły fragment adresu). Jeśli ustawione, "
+                    "agent zbiera ze strony linki pasujące do wzorca i odczytuje szczegóły z każdej podstrony.",
+    )
+    max_detail_pages: int = Field(default=20, ge=1, le=100)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +154,7 @@ class SourceReport(BaseModel):
     raw_events: int = 0
     valid_events: int = 0
     rejected_events: int = 0
+    detail_pages: int = 0
     suspicious_content: bool = False
     warnings: list[str] = Field(default_factory=list)
 

@@ -64,8 +64,10 @@ def event_key(organizer: str, track: str, date_start: date) -> str:
     return f"{normalize_organizer(organizer)}|{_fold(track)}|{date_start.isoformat()}"
 
 
-def event_id(organizer: str, track: str, date_start: date) -> str:
-    return hashlib.sha1(event_key(organizer, track, date_start).encode()).hexdigest()[:12]
+def event_id(organizer: str, track: str, date_start: date, extra: str = "") -> str:
+    """``extra`` (np. adres podstrony) odróżnia kilka sesji tego samego dnia na tym samym torze."""
+    key = event_key(organizer, track, date_start) + (f"|{extra}" if extra else "")
+    return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
 _MERGE_FIELDS = ["date_end", "price", "currency", "price_pln", "price_note", "seats_left",
@@ -76,9 +78,11 @@ def deduplicate(events: list[TrackDayEvent], own_source: dict[str, str]) -> tupl
     """Łączy duplikaty (ten sam organizator + tor + data).
 
     Pierwszeństwo ma wpis ze strony samego organizatora (``own_source``: source_id -> organizator),
-    puste pola są uzupełniane danymi z duplikatu. Zwraca (lista, liczba usuniętych).
+    puste pola są uzupełniane danymi z duplikatu. Dwa wpisy z TEGO SAMEGO źródła z różnymi linkami
+    (np. dwie sesje tego samego dnia, każda na osobnej podstronie) nie są duplikatami.
+    Zwraca (lista, liczba usuniętych).
     """
-    by_key: dict[str, TrackDayEvent] = {}
+    by_key: dict[str, list[TrackDayEvent]] = {}
     removed = 0
 
     def is_own(e: TrackDayEvent) -> bool:
@@ -87,11 +91,14 @@ def deduplicate(events: list[TrackDayEvent], own_source: dict[str, str]) -> tupl
 
     for e in events:
         k = event_key(e.organizer, e.track, e.date_start)
-        if k not in by_key:
-            by_key[k] = e
+        group = by_key.setdefault(k, [])
+        idx = next((i for i, c in enumerate(group)
+                    if not (c.source_id == e.source_id and c.url != e.url)), None)
+        if idx is None:
+            group.append(e)
             continue
         removed += 1
-        current = by_key[k]
+        current = group[idx]
         primary, secondary = (e, current) if (is_own(e) and not is_own(current)) else (current, e)
         updates = {f: getattr(secondary, f) for f in _MERGE_FIELDS
                    if getattr(primary, f) is None and getattr(secondary, f) is not None}
@@ -99,5 +106,6 @@ def deduplicate(events: list[TrackDayEvent], own_source: dict[str, str]) -> tupl
             updates["groups"] = secondary.groups
         merged = primary.model_copy(update=updates)
         merged.issues = sorted(set(primary.issues) | {"połączono z duplikatem z innego źródła"})
-        by_key[k] = merged
-    return sorted(by_key.values(), key=lambda e: (e.date_start, e.track)), removed
+        group[idx] = merged
+    events_out = [e for group in by_key.values() for e in group]
+    return sorted(events_out, key=lambda e: (e.date_start, e.track, e.name)), removed

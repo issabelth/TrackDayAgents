@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Comment, Tag
 
 _DROP_TAGS = ["script", "style", "noscript", "template", "iframe", "svg", "canvas", "object", "embed", "head"]
 _HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0|opacity\s*:\s*0(?![.\d])", re.I)
@@ -34,27 +34,44 @@ def _is_hidden(tag: Tag) -> bool:
     return bool(style and _HIDDEN_STYLE.search(str(style)))
 
 
-def html_to_text(html: str, base_url: str | None = None) -> CleanResult:
-    soup = BeautifulSoup(html, "html.parser")
-    title = soup.title.get_text(strip=True) if soup.title else None
-
+def _strip(soup: BeautifulSoup) -> tuple[list[str], int]:
+    """Usuwa skrypty, komentarze i elementy ukryte; zwraca (tekst ukrytych elementów, ich liczba)."""
     for t in soup(_DROP_TAGS):
         t.decompose()
-    # komentarze HTML
-    from bs4 import Comment
-
     for c in soup.find_all(string=lambda s: isinstance(s, Comment)):
         c.extract()
-
     hidden_parts: list[str] = []
-    hidden = [t for t in soup.find_all(True) if _is_hidden(t)]
     count = 0
-    for t in hidden:
+    for t in [t for t in soup.find_all(True) if _is_hidden(t)]:
         if t.decomposed:
             continue
         hidden_parts.append(t.get_text(" ", strip=True))
         t.decompose()
         count += 1
+    return hidden_parts, count
+
+
+def extract_links(html: str, base_url: str) -> list[str]:
+    """Adresy bezwzględne wszystkich WIDOCZNYCH linków strony (bez powtórzeń, w kolejności występowania).
+
+    Linki z ukrytych elementów są pomijane - ukryty link mógłby prowadzić agenta na stronę atakującego.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    _strip(soup)
+    seen: dict[str, None] = {}
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
+            continue
+        full = urljoin(base_url, href).split("#", 1)[0]
+        seen.setdefault(full, None)
+    return list(seen)
+
+
+def html_to_text(html: str, base_url: str | None = None) -> CleanResult:
+    soup = BeautifulSoup(html, "html.parser")
+    title = soup.title.get_text(strip=True) if soup.title else None
+    hidden_parts, count = _strip(soup)
 
     for a in soup.find_all("a"):
         href = (a.get("href") or "").strip()

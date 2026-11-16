@@ -156,12 +156,18 @@ with tab_sources:
     st.caption("Agent przy każdym uruchomieniu przeszukuje wszystkie **aktywne** strony z tej listy. "
                "Dodaj wiersz (+ pod tabelą), wpisz adres strony z terminami i kliknij **Zapisz listę**. "
                "Wiersz usuwasz, zaznaczając go i naciskając Delete (ikona kosza).")
+    st.caption("**Podstrony:** jeśli strona to tylko lista wydarzeń, a szczegóły są po kliknięciu, wpisz w kolumnie "
+               "*Wzorzec linków do podstron* fragment adresu podstron wydarzeń (np. `track-day`) albo wyrażenie "
+               "regularne (np. `\\d{1,2}-\\d{1,2}-\\d{2}/?$` = adres kończący się datą). Agent wejdzie w każdą "
+               "pasującą podstronę (max *Limit podstron*) i odczyta z niej szczegóły. Puste = analiza samej strony.")
     saved = repo.list_sources()
     sources_df = pd.DataFrame(
-        [{"Aktywne": s.enabled, "Nazwa": s.name, "Organizator": s.organizer or "", "Adres strony": s.url}
+        [{"Aktywne": s.enabled, "Nazwa": s.name, "Organizator": s.organizer or "", "Adres strony": s.url,
+          "Wzorzec linków do podstron": s.detail_link_pattern or "", "Limit podstron": s.max_detail_pages}
          for s in saved],
-        columns=["Aktywne", "Nazwa", "Organizator", "Adres strony"],
-    ).astype({"Aktywne": bool, "Nazwa": str, "Organizator": str, "Adres strony": str})
+        columns=["Aktywne", "Nazwa", "Organizator", "Adres strony", "Wzorzec linków do podstron", "Limit podstron"],
+    ).astype({"Aktywne": bool, "Nazwa": str, "Organizator": str, "Adres strony": str,
+              "Wzorzec linków do podstron": str, "Limit podstron": "Int64"})
     edited = st.data_editor(
         sources_df,
         key=f"sources_editor_{st.session_state.get('sources_version', 0)}",
@@ -173,6 +179,12 @@ with tab_sources:
             "Organizator": st.column_config.TextColumn(help="Organizator torowań z tej strony (opcjonalnie)"),
             "Adres strony": st.column_config.TextColumn(required=True, help="https://... lub sample://plik.html",
                                                         width="large"),
+            "Wzorzec linków do podstron": st.column_config.TextColumn(
+                help="Opcjonalnie. Fragment adresu albo wyrażenie regularne - agent wejdzie w każdą podstronę, "
+                     "której adres pasuje, i odczyta z niej szczegóły wydarzenia."),
+            "Limit podstron": st.column_config.NumberColumn(
+                min_value=1, max_value=100, step=1, default=20, width="small",
+                help="Maksymalna liczba podstron odczytywanych z tej strony (każda to osobne zapytanie do modelu)."),
         },
         alt="Lista stron organizatorów przeszukiwanych przez agenta",
     )
@@ -194,7 +206,10 @@ with tab_sources:
                 prev = old_by_url.get(url)
                 new_sources.append(make_source(
                     url, name=cell(row.get("Nazwa")), organizer=cell(row.get("Organizator")),
-                    enabled=True if pd.isna(row.get("Aktywne")) else bool(row.get("Aktywne")), base_url=prev.base_url if prev else None))
+                    enabled=True if pd.isna(row.get("Aktywne")) else bool(row.get("Aktywne")),
+                    base_url=prev.base_url if prev else None,
+                    detail_link_pattern=cell(row.get("Wzorzec linków do podstron")),
+                    max_detail_pages=None if pd.isna(row.get("Limit podstron")) else int(row.get("Limit podstron"))))
             except SourceError as e:
                 errors.append(f"Wiersz {i}: {e}")
         if errors:
@@ -265,7 +280,7 @@ with tab_report:
         if report.sources:
             st.dataframe(pd.DataFrame([{
                 "Źródło": s.source_name, "OK": "✅" if s.ok else "❌", "Błąd": s.error or "",
-                "Fragmenty": s.chunks, "Wyodrębnione": s.raw_events, "Poprawne": s.valid_events,
+                "Podstrony": s.detail_pages, "Fragmenty": s.chunks, "Wyodrębnione": s.raw_events, "Poprawne": s.valid_events,
                 "Odrzucone": s.rejected_events, "Podejrzana treść": "⚠️" if s.suspicious_content else "",
             } for s in report.sources]), hide_index=True, width="stretch")
         for w in report.warnings:

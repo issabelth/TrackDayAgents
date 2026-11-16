@@ -27,7 +27,8 @@ class SourceError(ValueError):
 
 
 def make_source(url: str, name: str | None = None, organizer: str | None = None,
-                enabled: bool = True, base_url: str | None = None) -> Source:
+                enabled: bool = True, base_url: str | None = None,
+                detail_link_pattern: str | None = None, max_detail_pages: int | None = None) -> Source:
     """Tworzy źródło z adresu wpisanego przez użytkownika (z walidacją formatu)."""
     url = (url or "").strip()
     if not url:
@@ -39,6 +40,11 @@ def make_source(url: str, name: str | None = None, organizer: str | None = None,
         if p.scheme not in ("http", "https") or not p.hostname:
             raise SourceError(f"„{url}” nie jest poprawnym adresem http:// lub https://")
         kind = "web"
+    pattern = (detail_link_pattern or "").strip() or None
+    if pattern and kind != "web":
+        raise SourceError("przechodzenie do podstron działa tylko dla stron http(s)")
+    if max_detail_pages is not None and not 1 <= max_detail_pages <= 100:
+        raise SourceError("limit podstron musi być liczbą od 1 do 100")
     host = urlparse(url).hostname or url.removeprefix("sample://")
     return Source(
         id=hashlib.sha1(url.encode()).hexdigest()[:10],
@@ -48,4 +54,6 @@ def make_source(url: str, name: str | None = None, organizer: str | None = None,
         base_url=base_url or (url if kind == "web" else None),
         kind=kind,
         enabled=enabled,
+        detail_link_pattern=pattern,
+        **({"max_detail_pages": max_detail_pages} if max_detail_pages else {}),
     )

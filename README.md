@@ -88,6 +88,7 @@ Agent obsługuje dwóch dostawców modelu – wybór w panelu bocznym:
 | Krok | Narzędzie | Co robi |
 |---|---|---|
 | 1 | `fetch_source` | pobiera stronę (http/https z walidacją adresu i `robots.txt`, limit rozmiaru) lub plik przykładowy `sample://` |
+| 1a | `find_detail_links` + `fetch_detail` | **tryb „lista → podstrony”** (opcjonalny, ustawiany dla źródła): zbiera widoczne linki z tej samej domeny pasujące do wzorca, pobiera każdą podstronę (robots.txt, przerwa 0,5 s, limit podstron) – model analizuje każdą podstronę osobno, a jej adres staje się linkiem wydarzenia |
 | 2 | `html_to_text` | usuwa skrypty, style i **ukryte elementy**, zamienia tabele na wiersze, linki na `tekst [link: URL]` |
 | 3 | `detect_injection` | heurystyczny detektor poleceń dla AI (PL/EN) – ostrzeżenie w raporcie |
 | 4 | `llm_extract` | wywołanie modelu (dzieli długie strony na fragmenty) |
@@ -146,7 +147,8 @@ Treść stron jest niezaufana (pośredni prompt injection), dlatego:
   przycisk **„Szukaj terminów (uruchom agenta)”** (lub Ctrl+Enter w polu tekstowym), tryb demo (bez LLM), filtry
   (zakres dat, maks. koszt, tory, organizatorzy, tylko z wolnymi miejscami).
 - **Źródła:** stała lista stron przeszukiwanych przy każdym uruchomieniu agenta, edytowana w tabeli (`st.data_editor`):
-  dodawanie i usuwanie stron, włączanie/wyłączanie, nazwa i organizator. Lista jest zapisywana w SQLite; przy pierwszym
+  dodawanie i usuwanie stron, włączanie/wyłączanie, nazwa i organizator, a dla stron, które są tylko listą
+  wydarzeń – **wzorzec linków do podstron** i limit podstron (agent wchodzi w każdą pasującą podstronę). Lista jest zapisywana w SQLite; przy pierwszym
   uruchomieniu wypełniają ją strony przykładowe z `data/sources.json`. „Wyczyść zebrane terminy” nie usuwa źródeł.
 - **Terminy:** metryki, tabela z linkami i oceną pewności, karta szczegółów wydarzenia (`st.metric`), eksport JSON.
 - **Mapa:** tory z wynikami (`st.map`).
@@ -194,7 +196,7 @@ Szczegóły: [docs/testy.md](docs/testy.md).
 ```bash
 .venv\Scripts\python.exe -m pytest
 ```
-Wynik: **30 testów – wszystkie zaliczone.**
+Wynik: **49 testów – wszystkie zaliczone.**
 
 **Testy z prawdziwym modelem** – zestaw wzorcowy 20 wydarzeń (3 strony organizatorów, różne formaty: tabela,
 karty, tekst blogowy) + 11 przypadków szczególnych (brak roku, przedział cen, „ostatnie miejsca”, nieprecyzyjna
@@ -205,11 +207,19 @@ data, treść spoza dziedziny, prompt injection, tekst po angielsku, próba zmia
 (albo `--model claude-haiku-5-5` z kluczem API). Skrypt zapisuje tabelę wyników do `docs/wyniki_testow_<model>.md`
 (precyzja, pełność, zgodność pól, czas, wynik każdego przypadku) – osobny plik dla każdego modelu, by łatwo je porównać.
 
+**Prawdziwa strona w trybie podstron** – `https://jcgroup.com.pl/oferta/` (lista produktów: terminy, vouchery,
+wynajem motocykli; szczegóły dopiero na podstronach), wzorzec `\d{1,2}-\d{1,2}-\d{2}/?$` (adres kończący się datą),
+model `ollama:qwen2.5:7b`, 16.11.2026: 10 z 10 podstron, **10 sesji** z poprawną datą, ceną (450 zł) i linkiem do
+podstrony; vouchery i wynajem pominięte przez wzorzec; dwie sesje tego samego dnia zachowane jako osobne terminy;
+czas 97 s, ~38 tys. tokenów wejściowych (lokalnie – bez kosztów).
+
 ## 7. Ograniczenia pierwszej wersji
 
 - **Źródła:** w repozytorium są strony przykładowe fikcyjnych organizatorów (domena `.example`); prawdziwe strony
   można wpisać w UI, ale brak dedykowanych adapterów i obsługi stron dynamicznych (JavaScript → Playwright w kolejnym etapie).
-  Facebook – tylko przez ręczne wklejenie treści.
+  Facebook – tylko przez ręczne wklejenie treści. Tryb podstron wymaga ręcznie dobranego wzorca linków dla każdej
+  witryny; każda podstrona to osobne wywołanie modelu (lokalnie ok. 10 s na podstronę). Model bywa mylony treścią
+  wspólną dla całego sklepu (np. lista wszystkich poziomów grup w „Informacjach dodatkowych”).
 - **LLM:** wynik zależy od modelu – możliwe pomyłki przy nietypowych formatach dat, przy wielu cenach (wybór
   „najniższej” bywa dyskusyjny, np. pakiety 2-dniowe), przy wnioskowaniu roku. Każde uruchomienie kosztuje
   (tokeny) i trwa kilka–kilkanaście sekund na źródło; odpowiedzi nie są w 100% deterministyczne.

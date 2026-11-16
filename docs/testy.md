@@ -9,12 +9,13 @@ Testy są podzielone na dwie warstwy:
 
 ## 1. Testy automatyczne – wyniki
 
-Uruchomienie z 14.11.2026 (Python 3.15.2, Windows 11): **30 passed**.
+Uruchomienie z 16.11.2026 (Python 3.15.2, Windows 11): **49 passed**.
 
 | Plik | Przykładowe przypadki |
 |---|---|
 | `tests/test_tools.py` | usuwanie ukrytego `<div style="display:none">` z poleceniem dla AI; tabela → wiersze; linki względne → bezwzględne; wykrywanie poleceń „ignore previous instructions” / „zignoruj wcześniejsze instrukcje”; blokada `file://`, `localhost`, `127.0.0.1`, `10.0.0.5`, danych logowania w URL; normalizacja nazw torów („POZNAN” → „Tor Poznań”, „Brno” → „Automotodrom Brno”) |
 | `tests/test_agent.py` | cały przepływ z „idealnym” modelem daje 100% zgodności z zestawem wzorcowym i usuwa 1 duplikat; ukryta treść nie trafia do modelu, a dokument jest w `<dokument_niezaufany>`; zła data → wpis odrzucony; link do obcej domeny (`evil.example`) → zastąpiony stroną organizatora; ujemna cena/miejsca → usunięte; brak waluty → PLN z uwagą; niska pewność → uwaga; błąd API nie przerywa działania; niedostępne źródło nie blokuje pozostałych |
+| `tests/test_detail_pages.py` | tryb „lista → podstrony”: tylko widoczne linki z tej samej domeny pasujące do wzorca (link ukryty i do obcej domeny pominięte), limit podstron, niedziałająca podstrona nie przerywa pracy, brak dopasowań → analiza samej listy, zwykły fragment adresu i niepoprawne wyrażenie jako wzorzec, dwie sesje jednego dnia = dwa terminy, link „udostępnij” zastąpiony adresem podstrony |
 | `tests/test_storage.py` | filtry SQL (data, koszt, tor, wolne miejsca); aktualizacja wydarzenia; zestaw wzorcowy vs on sam = 100% |
 
 ## 2. Zestaw wzorcowy (dane testowe)

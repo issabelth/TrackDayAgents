@@ -35,32 +35,46 @@ def _read_sample(url: str) -> FetchResult:
     return FetchResult(content=path.read_text(encoding="utf-8"), final_url=url, content_type="text/html")
 
 
-def _robots_allows(url: str, user_agent: str, timeout: int) -> bool:
+def _robots_allows(url: str, user_agent: str, timeout: int, cache: dict | None = None) -> bool:
     p = urlparse(url)
-    rp = robotparser.RobotFileParser()
+    host = f"{p.scheme}://{p.netloc}"
+    store = cache
+    if store is not None and host in store:
+        rp = store[host]
+        return True if rp is None else rp.can_fetch(user_agent, url)
+    rp: robotparser.RobotFileParser | None = robotparser.RobotFileParser()
     try:
-        resp = requests.get(f"{p.scheme}://{p.netloc}/robots.txt", timeout=timeout,
-                            headers={"User-Agent": user_agent})
+        resp = requests.get(f"{host}/robots.txt", timeout=timeout, headers={"User-Agent": user_agent})
+        if resp.status_code >= 400:
+            rp = None  # brak robots.txt -> brak zakazu
+        else:
+            rp.parse(resp.text.splitlines())
     except requests.RequestException:
-        return True  # brak robots.txt / błąd sieci -> brak zakazu
-    if resp.status_code >= 400:
-        return True
-    rp.parse(resp.text.splitlines())
-    return rp.can_fetch(user_agent, url)
+        rp = None  # błąd sieci -> brak zakazu
+    if store is not None:
+        store[host] = rp
+    return True if rp is None else rp.can_fetch(user_agent, url)
 
 
 def fetch_source(source: Source, settings: Settings) -> FetchResult:
     if source.url.startswith("sample://"):
         return _read_sample(source.url)
+    return fetch_url(source.url, settings)
 
+
+def fetch_url(url: str, settings: Settings, robots_cache: dict | None = None) -> FetchResult:
+    """Pobiera stronę WWW (walidacja adresu, robots.txt, ręczne przekierowania, limit rozmiaru).
+
+    ``robots_cache`` - słownik host -> reguły robots.txt; przy pobieraniu wielu podstron tej samej witryny
+    plik robots.txt jest pobierany raz, ale reguły są sprawdzane dla każdego adresu.
+    """
     try:
-        url = validate_public_url(source.url)
+        url = validate_public_url(url)
     except UnsafeURLError as e:
         raise FetchError(str(e)) from e
 
-    if not _robots_allows(url, settings.user_agent, settings.http_timeout_s):
+    if not _robots_allows(url, settings.user_agent, settings.http_timeout_s, robots_cache):
         raise FetchError("Strona nie zezwala na automatyczne pobieranie (robots.txt).")
-
     headers = {"User-Agent": settings.user_agent, "Accept": "text/html,text/plain;q=0.9"}
     # Ręczna obsługa przekierowań - każdy kolejny adres też jest walidowany (SSRF).
     for _ in range(4):
