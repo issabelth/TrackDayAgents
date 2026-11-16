@@ -89,6 +89,7 @@ Agent obsługuje dwóch dostawców modelu – wybór w panelu bocznym:
 |---|---|---|
 | 1 | `fetch_source` | pobiera stronę (http/https z walidacją adresu i `robots.txt`, limit rozmiaru) lub plik przykładowy `sample://` |
 | 1a | `find_detail_links` + `fetch_detail` | **tryb „lista → podstrony”** (opcjonalny, ustawiany dla źródła): zbiera widoczne linki z tej samej domeny pasujące do wzorca, pobiera każdą podstronę (robots.txt, przerwa 0,5 s, limit podstron) – model analizuje każdą podstronę osobno, a jej adres staje się linkiem wydarzenia |
+| 2a | `extract_variants` | **warianty sesja × grupa** ze sklepu WooCommerce: wszystkie warianty, cena i liczba wolnych miejsc („3 w magazynie”) odczytywane deterministycznie z danych formularza (`data-product_variations`) – bez modelu, pewniej i bez tokenów; grupy wydarzenia = grupy, które naprawdę można wybrać, wolne miejsca = suma wariantów |
 | 2 | `html_to_text` | usuwa skrypty, style i **ukryte elementy**, zamienia tabele na wiersze, linki na `tekst [link: URL]` |
 | 3 | `detect_injection` | heurystyczny detektor poleceń dla AI (PL/EN) – ostrzeżenie w raporcie |
 | 4 | `llm_extract` | wywołanie modelu (dzieli długie strony na fragmenty) |
@@ -150,7 +151,11 @@ Treść stron jest niezaufana (pośredni prompt injection), dlatego:
   dodawanie i usuwanie stron, włączanie/wyłączanie, nazwa i organizator, a dla stron, które są tylko listą
   wydarzeń – **wzorzec linków do podstron** i limit podstron (agent wchodzi w każdą pasującą podstronę). Lista jest zapisywana w SQLite; przy pierwszym
   uruchomieniu wypełniają ją strony przykładowe z `data/sources.json`. „Wyczyść zebrane terminy” nie usuwa źródeł.
-- **Terminy:** metryki, tabela z linkami i oceną pewności, karta szczegółów wydarzenia (`st.metric`), eksport JSON.
+- **Terminy:** **jeden wiersz na dzień i tor** (`st.expander`: dzień tygodnia, data, tor, organizator, liczba wydarzeń
+  i wyborów, cena od, suma wolnych miejsc); po rozwinięciu – tabela wszystkich wyborów: godzina, wydarzenie,
+  nitka/odmiana (np. REVERS), grupa, wolne miejsca, cena, sesja, link. Filtr **„Grupy / poziom”** w panelu bocznym
+  pokazuje tylko wybory z zaznaczonych grup (razem z „Tylko z wolnymi miejscami” – tylko grupy z miejscami).
+  Pod listą: karta szczegółów wydarzenia (`st.metric`) i eksport JSON.
 - **Mapa:** tory z wynikami (`st.map`).
 - **Raport agenta:** wynik per źródło, ostrzeżenia (w tym wykryty prompt injection), ślad kroków i zużycie tokenów.
 - **O agencie:** rola, prompt systemowy i schemat JSON wyniku.
@@ -196,7 +201,7 @@ Szczegóły: [docs/testy.md](docs/testy.md).
 ```bash
 .venv\Scripts\python.exe -m pytest
 ```
-Wynik: **49 testów – wszystkie zaliczone.**
+Wynik: **56 testów – wszystkie zaliczone.**
 
 **Testy z prawdziwym modelem** – zestaw wzorcowy 20 wydarzeń (3 strony organizatorów, różne formaty: tabela,
 karty, tekst blogowy) + 11 przypadków szczególnych (brak roku, przedział cen, „ostatnie miejsca”, nieprecyzyjna
@@ -211,15 +216,19 @@ data, treść spoza dziedziny, prompt injection, tekst po angielsku, próba zmia
 wynajem motocykli; szczegóły dopiero na podstronach), wzorzec `\d{1,2}-\d{1,2}-\d{2}/?$` (adres kończący się datą),
 model `ollama:qwen2.5:7b`, 16.11.2026: 10 z 10 podstron, **10 sesji** z poprawną datą, ceną (450 zł) i linkiem do
 podstrony; vouchery i wynajem pominięte przez wzorzec; dwie sesje tego samego dnia zachowane jako osobne terminy;
-czas 97 s, ~38 tys. tokenów wejściowych (lokalnie – bez kosztów).
+czas 97 s, ~38 tys. tokenów wejściowych (lokalnie – bez kosztów). Po dodaniu odczytu wariantów: **25 wyborów**
+(sesja × grupa) z liczbą wolnych miejsc zgodną ze sklepem (np. 21.11, 13:30 REVERS, grupa zielona – 3 miejsca),
+godzina rozpoczęcia i nitka REVERS rozróżniają dwa wydarzenia tego samego dnia.
 
 ## 7. Ograniczenia pierwszej wersji
 
 - **Źródła:** w repozytorium są strony przykładowe fikcyjnych organizatorów (domena `.example`); prawdziwe strony
   można wpisać w UI, ale brak dedykowanych adapterów i obsługi stron dynamicznych (JavaScript → Playwright w kolejnym etapie).
   Facebook – tylko przez ręczne wklejenie treści. Tryb podstron wymaga ręcznie dobranego wzorca linków dla każdej
-  witryny; każda podstrona to osobne wywołanie modelu (lokalnie ok. 10 s na podstronę). Model bywa mylony treścią
-  wspólną dla całego sklepu (np. lista wszystkich poziomów grup w „Informacjach dodatkowych”).
+  witryny; każda podstrona to osobne wywołanie modelu (lokalnie ok. 10 s na podstronę). Warianty są odczytywane
+  tylko ze sklepów WooCommerce, które zapisują je w kodzie strony (gdy sklep wczytuje je JavaScriptem – ostrzeżenie
+  w raporcie). Nazwa sesji ze sklepu bywa niespójna z tytułem (np. „Sesja popołudniowa” przy godz. 13:30) – godzinę
+  bierzemy z tytułu. Nitkę „podstawową” model często pomija (pole puste), REVERS jest rozpoznawany zawsze.
 - **LLM:** wynik zależy od modelu – możliwe pomyłki przy nietypowych formatach dat, przy wielu cenach (wybór
   „najniższej” bywa dyskusyjny, np. pakiety 2-dniowe), przy wnioskowaniu roku. Każde uruchomienie kosztuje
   (tokeny) i trwa kilka–kilkanaście sekund na źródło; odpowiedzi nie są w 100% deterministyczne.

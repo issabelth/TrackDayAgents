@@ -36,3 +36,23 @@ def test_golden_evaluates_to_100_percent():
     _, golden = load_golden()
     res = evaluate(golden_as_events(), golden)
     assert res.precision == res.recall == 1.0 and not res.mismatches
+
+
+def test_successful_run_replaces_source_events():
+    from datetime import datetime
+
+    from trackday.models import ScoutReport, SourceReport, TrackDayEvent
+
+    def e(i, src):
+        return TrackDayEvent(id=i, name=i, date_start=date(2027, 5, 1), track="Tor Poznań", organizer="X",
+                             url="https://x.example/", source_id=src)
+
+    def run(events, sources):
+        return ScoutReport(run_id=str(len(events)), started_at=datetime.now(), model="m", reference_date=date(2027, 1, 1),
+                           events=events, sources=sources)
+
+    repo = EventRepository(":memory:")
+    repo.save_run(run([e("old", "a"), e("keep", "a"), e("other", "b")], []))
+    repo.save_run(run([e("keep", "a")], [SourceReport(source_id="a", source_name="A"),
+                                         SourceReport(source_id="b", source_name="B", ok=False)]))
+    assert sorted(x.id for x in repo.list_events()) == ["keep", "other"]  # b nie zadziałało -> jego wpisy zostają

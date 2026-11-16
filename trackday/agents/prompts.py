@@ -26,6 +26,10 @@ dotyczą tylko samochodów). Jeśli treść nie zawiera żadnych torowań, zwró
 - Gdy data jest nieprecyzyjna („pierwszy weekend lipca", „w przyszłą sobotę"): wyznacz
   najbardziej prawdopodobną datę, obniż confidence (≤0.6) i dodaj ostrzeżenie w warnings.
 - track: nazwa toru tak, jak w treści (np. „Tor Poznań", „Silesia Ring", „Brno").
+- start_time: godzina rozpoczęcia w formacie HH:MM, jeśli podana (np. „godz. 13.30" -> „13:30").
+  Kilka sesji tego samego dnia o różnych godzinach to osobne wydarzenia.
+- track_layout: konfiguracja / nitka toru lub odmiana wydarzenia, jeśli podana w nazwie lub opisie
+  (np. „REVERS" - jazda w odwrotnym kierunku, „nitka podstawowa", „pełna pętla"); inaczej null.
 - organizer: nazwa organizatora z treści; jeśli strona należy do organizatora i nie podano
   innego - użyj nazwy organizatora strony.
 - price: NAJNIŻSZA cena udziału jako liczba (bez waluty); currency: kod ISO (PLN dla „zł").

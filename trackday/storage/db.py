@@ -95,6 +95,14 @@ class EventRepository:
     def save_run(self, report: ScoutReport) -> None:
         self.upsert_events(report.events)
         with self._conn() as c:
+            # Udany przebieg źródła zastępuje jego poprzednie terminy: wpisy, których nie ma już na stronie
+            # (odwołane, wyprzedane i zdjęte, albo odczytane wcześniej inną metodą), są usuwane.
+            new_ids = [e.id for e in report.events]
+            for sr in report.sources:
+                if not sr.ok or sr.source_id == "pasted":
+                    continue
+                c.execute(f"""DELETE FROM events WHERE json_extract(data, '$.source_id') = ?
+                              AND id NOT IN ({",".join("?" * len(new_ids))})""", (sr.source_id, *new_ids))
             c.execute("INSERT OR REPLACE INTO runs VALUES (?,?,?,?,?)",
                       (report.run_id, report.started_at.isoformat(timespec="seconds"), report.model,
                        len(report.events), report.model_dump_json()))

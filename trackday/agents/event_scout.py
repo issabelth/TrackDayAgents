@@ -4,7 +4,7 @@ Rola: zbieranie informacji o torowaniach ze stron organizatorów.
 
 Przepływ dla każdego źródła:
     fetch_source -> [tryb podstron: find_detail_links -> fetch_detail dla każdej podstrony]
-    -> html_to_text -> detect_injection -> sanitize -> (chunking)
+    -> html_to_text (+ extract_variants: warianty sesja × grupa ze sklepu) -> detect_injection -> sanitize -> (chunking)
     -> LLM (structured output: ExtractionResult) -> walidacja/normalizacja -> TrackDayEvent
 Na końcu: deduplikacja między źródłami i (opcjonalnie) zapis do SQLite.
 """
@@ -25,6 +25,7 @@ from trackday.config import Settings, get_settings
 from trackday.llm import LLMError, StructuredLLM
 from trackday.models import (
     AgentStep,
+    EventVariant,
     ExtractedEvent,
     ExtractionResult,
     ScoutReport,
@@ -36,10 +37,23 @@ from trackday.storage.db import EventRepository
 from trackday.tools.fetch import FetchError, fetch_source, fetch_url
 from trackday.tools.html_clean import extract_links, html_to_text, split_into_chunks
 from trackday.tools.normalize import deduplicate, event_id, match_track
+from trackday.tools.variants import extract_variants
 from trackday.tools.security import detect_injection, same_site, sanitize_text, wrap_untrusted
 
 # Przybliżone kursy do przeliczeń w PoC (do zastąpienia API kursów walut).
 FX_TO_PLN = {"PLN": 1.0, "EUR": 4.30, "CZK": 0.17, "HUF": 0.011}
+
+
+_TIME_RX = re.compile(r"(?<![\d.])([01]?\d|2[0-3])[.:]([0-5]\d)(?![\d.])")
+_TIME_HINT_RX = re.compile(r"(?:godz\.?|godzina|start|o)\s*([01]?\d|2[0-3])[.:]([0-5]\d)(?![\d.])", re.I)
+
+
+def _parse_time(text: str | None, require_hint: bool = False) -> str | None:
+    """'13.30' / 'godz. 13:30' -> '13:30'. Z nazwy wydarzenia tylko po słowie 'godz.' (żeby nie brać dat)."""
+    if not text:
+        return None
+    m = (_TIME_HINT_RX if require_hint else _TIME_RX).search(text)
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m else None
 
 
 class ScoutInput(BaseModel):
@@ -99,13 +113,13 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
                         ) -> tuple[SourceReport, list[TrackDayEvent]]:
         sr = SourceReport(source_id=src.id, source_name=src.name)
 
-        # 1. Pobranie treści -> lista stron do analizy: (etykieta, tekst, ukryty tekst, adres strony)
-        pages: list[tuple[str, str, str, str | None]] = []
+        # 1. Pobranie treści -> lista stron do analizy: (etykieta, tekst, ukryty tekst, adres strony, warianty)
+        pages: list[tuple[str, str, str, str | None, list[EventVariant]]] = []
         detail_mode = False
         if src.kind == "text":
             text, warns = sanitize_text(data.pasted_text or "", self.settings.max_pasted_chars)
             sr.warnings.extend(warns)
-            pages.append((src.name, text, "", None))
+            pages.append((src.name, text, "", None, []))
             report.steps.append(AgentStep(tool="input", detail=f"{src.name}: {len(text)} znaków."))
         else:
             try:
@@ -125,18 +139,24 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
                 pages.append(self._clean_page(src.name, fetched.content, base_url, sr, report))
 
         # 2-3. Detekcja prompt injection i ekstrakcja przez LLM (każda strona osobno, długie - fragmentami)
-        extracted: list[tuple[ExtractedEvent, str | None]] = []
-        for label, text, hidden_text, page_url in pages:
+        extracted: list[tuple[ExtractedEvent, str | None, list[EventVariant]]] = []
+        for label, text, hidden_text, page_url, variants in pages:
             got = self._extract_page(src, label, text, hidden_text, data, sr, report)
             if got is None:  # błąd modelu - przerywamy to źródło
                 return sr, []
-            extracted.extend((ev, page_url) for ev in got)
+            # Warianty (sesja × grupa) dotyczą wydarzenia ze strony - przypisujemy je, gdy wydarzenie jest jedno
+            if variants and len(got) != 1:
+                sr.warnings.append(f"{label}: model zwrócił {len(got)} wydarzeń, a strona ma {len(variants)} "
+                                   f"wariantów - warianty pominięto.")
+                variants = []
+            extracted.extend((ev, page_url, variants) for ev in got)
         sr.raw_events = len(extracted)
 
         # 4. Walidacja i normalizacja
         events: list[TrackDayEvent] = []
-        for ev, page_url in extracted:
-            converted, problem = self._to_event(ev, src, page_url, data.reference_date, detail_page=detail_mode)
+        for ev, page_url, variants in extracted:
+            converted, problem = self._to_event(ev, src, page_url, data.reference_date, detail_page=detail_mode,
+                                                variants=variants)
             if converted is None:
                 sr.rejected_events += 1
                 sr.warnings.append(f"Odrzucono wpis '{ev.name}': {problem}")
@@ -148,14 +168,20 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
         return sr, events
 
     def _clean_page(self, label: str, html: str, page_url: str | None, sr: SourceReport,
-                    report: ScoutReport) -> tuple[str, str, str, str | None]:
+                    report: ScoutReport) -> tuple[str, str, str, str | None, list[EventVariant]]:
         cleaned = html_to_text(html, page_url)
         text, warns = sanitize_text(cleaned.text, self.settings.max_pasted_chars * 4)
         sr.warnings.extend(warns)
         report.steps.append(AgentStep(
             tool="html_to_text",
             detail=f"{label}: {len(text)} znaków tekstu, usunięto {cleaned.hidden_elements} ukrytych elementów."))
-        return label, text, cleaned.hidden_text, page_url
+        found = extract_variants(html)
+        sr.warnings.extend(f"{label}: {w}" for w in found.warnings)
+        if found.variants:
+            report.steps.append(AgentStep(
+                tool="extract_variants",
+                detail=f"{label}: {len(found.variants)} wariantów (sesja × grupa) z liczbą miejsc."))
+        return label, text, cleaned.hidden_text, page_url, found.variants
 
     def _detail_links(self, src: Source, html: str, base_url: str | None, sr: SourceReport,
                       report: ScoutReport) -> list[str]:
@@ -184,7 +210,7 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
         return links
 
     def _fetch_details(self, src: Source, links: list[str], sr: SourceReport, report: ScoutReport
-                       ) -> list[tuple[str, str, str, str | None]]:
+                       ) -> list[tuple[str, str, str, str | None, list[EventVariant]]]:
         pages = []
         robots: dict = {}
         for i, url in enumerate(links):
@@ -249,7 +275,8 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
         return extracted
 
     def _to_event(self, ev: ExtractedEvent, src: Source, base_url: str | None, ref: date,
-                  detail_page: bool = False) -> tuple[TrackDayEvent | None, str]:
+                  detail_page: bool = False, variants: list[EventVariant] | None = None
+                  ) -> tuple[TrackDayEvent | None, str]:
         issues: list[str] = []
         try:
             start = date.fromisoformat(ev.date_start.strip())
@@ -268,6 +295,11 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
                 end = None
         if start < ref:
             issues.append("termin w przeszłości")
+
+        start_time = _parse_time(ev.start_time) or _parse_time(ev.name, require_hint=True)
+        track_layout = (ev.track_layout or "").strip()[:60] or None
+        if track_layout is None and re.search(r"\brevers(e)?\b", ev.name, re.I):
+            track_layout = "REVERS"
 
         if not ev.track or not ev.track.strip():
             return None, "brak nazwy toru"
@@ -298,7 +330,11 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
             else:
                 return None, "brak linku do wydarzenia"
 
+        variants = variants or []
         price = ev.price if ev.price is not None and ev.price >= 0 else None
+        v_prices = [v.price for v in variants if v.price is not None]
+        if v_prices:  # cena ze sklepu (najniższa z wariantów) jest pewniejsza niż odczyt modelu
+            price, ev.currency = min(v_prices), next(v.currency for v in variants if v.price == min(v_prices))
         if ev.price is not None and ev.price < 0:
             issues.append("ujemna cena - pominięto")
         currency = (ev.currency or "").upper().strip() or None
@@ -320,7 +356,16 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
         if seats_left is not None and seats_total is not None and seats_left > seats_total:
             issues.append("wolnych miejsc więcej niż puli - pominięto pulę")
             seats_total = None
-        if seats_left is None and not ev.availability_note:
+        groups = [g.strip() for g in ev.groups if g and g.strip()]
+        availability_note = ev.availability_note
+        if variants:
+            # suma wolnych miejsc wszystkich wariantów; grupy = grupy, które naprawdę można wybrać
+            known = [v.seats_left for v in variants if v.seats_left is not None]
+            seats_left = sum(known) if len(known) == len(variants) else seats_left
+            seats_total = None if len(known) == len(variants) else seats_total
+            groups = list(dict.fromkeys(v.group for v in variants if v.group)) or groups
+            availability_note = f"{len(variants)} wariantów (sesja × grupa) - szczegóły po rozwinięciu"
+        if seats_left is None and not availability_note:
             issues.append("brak informacji o miejscach")
 
         if ev.confidence < 0.7:
@@ -334,22 +379,25 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
                 date_start=start,
                 date_end=end,
                 track=track.name if track else ev.track.strip(),
+                start_time=start_time,
+                track_layout=track_layout,
                 track_known=track is not None,
                 organizer=organizer,
                 price=price,
                 currency=currency if price is not None else None,
                 price_pln=price_pln,
                 price_note=ev.price_note,
-                groups=[g.strip() for g in ev.groups if g and g.strip()],
+                groups=groups,
                 url=url,
                 seats_left=seats_left,
                 seats_total=seats_total,
-                availability_note=ev.availability_note,
+                availability_note=availability_note,
                 confidence=ev.confidence,
                 lat=track.lat if track else None,
                 lon=track.lon if track else None,
                 source_id=src.id,
                 issues=issues + ([f"uwaga modelu: {ev.notes}"] if ev.notes else []),
+                variants=variants,
             ), ""
         except ValidationError as e:
             return None, "; ".join(err["msg"] for err in e.errors())

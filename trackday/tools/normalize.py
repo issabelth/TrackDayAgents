@@ -104,6 +104,8 @@ def deduplicate(events: list[TrackDayEvent], own_source: dict[str, str]) -> tupl
                    if getattr(primary, f) is None and getattr(secondary, f) is not None}
         if not primary.groups and secondary.groups:
             updates["groups"] = secondary.groups
+        if not primary.variants and secondary.variants:
+            updates["variants"] = secondary.variants
         merged = primary.model_copy(update=updates)
         merged.issues = sorted(set(primary.issues) | {"połączono z duplikatem z innego źródła"})
         group[idx] = merged

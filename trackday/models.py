@@ -28,6 +28,13 @@ class ExtractedEvent(BaseModel):
         description="Data zakończenia (YYYY-MM-DD) dla wydarzeń wielodniowych, inaczej null."
     )
     track: str = Field(description="Nazwa toru, np. 'Tor Poznań', 'Silesia Ring'.")
+    start_time: str | None = Field(
+        default=None, description="Godzina rozpoczęcia HH:MM (np. z 'godz. 13.30' -> '13:30'). null, jeśli brak."
+    )
+    track_layout: str | None = Field(
+        default=None,
+        description="Konfiguracja / nitka toru albo odmiana wydarzenia, jeśli podana (np. 'REVERS', 'nitka podstawowa').",
+    )
     organizer: str | None = Field(description="Organizator wydarzenia, jeśli podany.")
     price: float | None = Field(
         description="Najniższa cena udziału jako liczba (bez waluty). null, jeśli brak ceny."
@@ -83,6 +90,20 @@ class Source(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Wariant wydarzenia (np. sesja popołudniowa × grupa zielona) - odczytany ze strony sklepu
+# ---------------------------------------------------------------------------
+class EventVariant(BaseModel):
+    options: dict[str, str] = Field(default_factory=dict, description="atrybut -> wybrana wartość")
+    session: str | None = None
+    group: str | None = None
+    price: float | None = None
+    currency: str | None = None
+    seats_left: int | None = None
+    availability_note: str | None = None
+    purchasable: bool = True
+
+
+# ---------------------------------------------------------------------------
 # Zwalidowane wydarzenie (wynik pracy agenta)
 # ---------------------------------------------------------------------------
 class TrackDayEvent(BaseModel):
@@ -91,6 +112,8 @@ class TrackDayEvent(BaseModel):
     date_start: date
     date_end: date | None = None
     track: str
+    start_time: str | None = None
+    track_layout: str | None = None
     track_known: bool = False
     organizer: str
     price: float | None = None
@@ -106,6 +129,7 @@ class TrackDayEvent(BaseModel):
     lat: float | None = None
     lon: float | None = None
     source_id: str
+    variants: list[EventVariant] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
     extracted_at: datetime = Field(default_factory=datetime.now)
 

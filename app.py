@@ -5,6 +5,7 @@ Uruchomienie:  streamlit run app.py
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, timedelta
 
 import pandas as pd
@@ -17,6 +18,7 @@ from trackday.evaluation import golden_as_events
 from trackday.llm import create_llm, is_local, list_ollama_models
 from trackday.models import ExtractionResult, ScoutReport, TrackDayEvent
 from trackday.sources import SourceError, load_sources, make_source
+from trackday.views import all_groups, group_by_day
 from trackday.storage.db import EventRepository
 
 st.set_page_config(page_title="TrackDay Agents", page_icon="🏍️", layout="wide")
@@ -84,6 +86,8 @@ with st.sidebar:
     max_price = st.slider("Maksymalny koszt [zł]", 0, 2000, 2000, step=50)
     track_filter = st.multiselect("Tory", repo.distinct("track"))
     org_filter = st.multiselect("Organizatorzy", repo.distinct("organizer"))
+    group_filter = st.multiselect("Grupy / poziom", all_groups(repo.list_events()),
+                                  help="Pokazuje tylko wybory (sesja × grupa) z zaznaczonych grup.")
     only_available = st.checkbox("Tylko z wolnymi miejscami")
     if st.button("Wyczyść zebrane terminy", width="stretch", help="Lista źródeł zostaje bez zmian."):
         repo.clear()
@@ -126,27 +130,14 @@ report: ScoutReport | None = st.session_state.get("report") or repo.last_run()
 
 
 # ============================================================== WIDOK
-def events_df(events: list[TrackDayEvent]) -> pd.DataFrame:
-    rows = []
-    for e in events:
-        price = f"{e.price:g} {e.currency}" if e.price is not None else "-"
-        seats = (str(e.seats_left) + (f" / {e.seats_total}" if e.seats_total else "")) if e.seats_left is not None \
-            else (e.availability_note or "?")
-        rows.append({
-            "Data": e.date_start.strftime("%d.%m.%Y") + (f"–{e.date_end.strftime('%d.%m')}" if e.date_end else ""),
-            "Tor": e.track, "Organizator": e.organizer, "Cena": price,
-            "Cena [zł]": e.price_pln, "Wolne miejsca": seats, "Grupy": ", ".join(e.groups),
-            "Pewność": e.confidence, "Link": e.url, "Uwagi": "; ".join(e.issues),
-        })
-    return pd.DataFrame(rows)
-
-
 st.title("Torowania motocyklowe")
 st.caption("Jedna lista terminów od wielu organizatorów - dane zebrane przez agenta „Poszukiwacz Terminów”.")
 
 d_from, d_to = (d_range if isinstance(d_range, tuple) and len(d_range) == 2 else (None, None))
 events = repo.list_events(date_from=d_from, date_to=d_to, max_price_pln=None if max_price >= 2000 else max_price,
                           tracks=track_filter or None, organizers=org_filter or None, only_available=only_available)
+days = group_by_day(events, set(group_filter) or None, only_available)
+events = [e for d in days for e in d.events]  # po filtrze grup
 
 tab_events, tab_map, tab_sources, tab_report, tab_agent, tab_next = st.tabs(
     ["📅 Terminy", "🗺️ Mapa", "🌐 Źródła", "🧾 Raport agenta", "🤖 O agencie", "🔜 Obserwowane / Powiadomienia"])
@@ -224,24 +215,31 @@ with tab_sources:
 
 with tab_events:
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Terminy (po filtrach)", len(events))
-    c2.metric("Tory", len({e.track for e in events}))
+    c1.metric("Dni z terminami", len(days))
+    c2.metric("Wybory (sesja × grupa)", sum(len(d.rows) for d in days))
     c3.metric("Organizatorzy", len({e.organizer for e in events}))
-    low = [e for e in events if e.seats_left is not None and 0 < e.seats_left < 3]
+    low = [r for d in days for r in d.rows if isinstance(r["Wolne miejsca"], int) and 0 < r["Wolne miejsca"] < 3]
     c4.metric("Prawie wyprzedane (<3 miejsca)", len(low))
     if not events:
         st.info("Brak terminów. Sprawdź listę stron w zakładce Źródła i kliknij **Szukaj terminów** "
-                "(albo wczytaj tryb demo).")
+                "(albo wczytaj tryb demo). Jeśli ustawiono filtr grup, żaden wybór do niego nie pasuje.")
     else:
-        df = events_df(events)
-        st.dataframe(
-            df, width="stretch", hide_index=True,
-            column_config={
-                "Link": st.column_config.LinkColumn("Link", display_text="otwórz ↗"),
-                "Cena [zł]": st.column_config.NumberColumn(format="%.0f zł"),
-                "Pewność": st.column_config.ProgressColumn(min_value=0.0, max_value=1.0, format="%.2f"),
-            },
-        )
+        st.caption("Jeden wiersz na dzień i tor - rozwiń, aby zobaczyć każdy wybór (wydarzenie, godzina, sesja, "
+                   "grupa) z liczbą wolnych miejsc.")
+        for d in days:
+            with st.expander(d.label(), key=f"day_{d.day:%Y%m%d}_{hashlib.sha1(d.track.encode()).hexdigest()[:8]}"):
+                st.dataframe(
+                    pd.DataFrame(d.rows).astype({"Wolne miejsca": str}), width="stretch", hide_index=True,
+                    column_order=["Godzina", "Wydarzenie", "Nitka / odmiana", "Grupa", "Wolne miejsca", "Cena",
+                                  "Sesja", "Organizator", "Link", "Uwagi"],
+                    column_config={
+                        "Link": st.column_config.LinkColumn("Link", display_text="otwórz ↗"),
+                        "Cena [zł]": None,
+                        "Organizator": None if len(d.organizers) == 1 else st.column_config.TextColumn(),
+                        "Wolne miejsca": st.column_config.TextColumn(),
+                    },
+                    alt=f"Wybory dnia {d.day:%d.%m.%Y} na torze {d.track}",
+                )
         st.download_button("⬇️ Pobierz JSON (kontrakt dla kolejnych agentów)",
                            data=ScoutReport(run_id="export", started_at=pd.Timestamp.now().to_pydatetime(),
                                             model="-", reference_date=date.today(), events=events).to_json_events(),
@@ -249,7 +247,8 @@ with tab_events:
 
         st.subheader("Szczegóły wydarzenia")
         idx = st.selectbox("Wybierz termin", range(len(events)),
-                           format_func=lambda i: f"{events[i].date_start} · {events[i].track} · {events[i].organizer}")
+                           format_func=lambda i: " · ".join(x for x in (str(events[i].date_start), events[i].start_time, events[i].track,
+                                                                  events[i].name, events[i].organizer) if x))
         e = events[idx]
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Cena", f"{e.price:g} {e.currency}" if e.price is not None else "brak")
