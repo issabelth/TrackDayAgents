@@ -86,6 +86,13 @@ _MERGE_FIELDS = ["date_end", "price", "currency", "price_pln", "price_note", "se
                  "seats_total", "availability_note", "lat", "lon"]
 
 
+def _different_session(a: TrackDayEvent, b: TrackDayEvent) -> bool:
+    """Ten sam dzień i tor, ale inna godzina startu albo inna odmiana toru (np. REVERS) - to osobne terminy."""
+    times = a.start_time and b.start_time and a.start_time != b.start_time
+    layouts = (a.track_layout or "").lower() != (b.track_layout or "").lower() and (a.track_layout or b.track_layout)
+    return bool(times or (layouts and a.source_id == b.source_id))
+
+
 def deduplicate(events: list[TrackDayEvent], own_source: dict[str, str]) -> tuple[list[TrackDayEvent], int]:
     """Łączy duplikaty (ten sam organizator + tor + data).
 
@@ -105,7 +112,7 @@ def deduplicate(events: list[TrackDayEvent], own_source: dict[str, str]) -> tupl
         k = event_key(e.organizer, e.track, e.date_start)
         group = by_key.setdefault(k, [])
         idx = next((i for i, c in enumerate(group)
-                    if not (c.source_id == e.source_id and c.url != e.url)), None)
+                    if not (c.source_id == e.source_id and c.url != e.url) and not _different_session(c, e)), None)
         if idx is None:
             group.append(e)
             continue

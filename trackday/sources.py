@@ -26,6 +26,16 @@ class SourceError(ValueError):
     pass
 
 
+FACEBOOK_HOSTS = ("facebook.com", "fb.com", "fb.me")
+
+
+def is_facebook_url(url: str) -> bool:
+    """Strony Facebooka: robots.txt zabrania robotom ich pobierania, a treść wymaga zalogowania -
+    terminy z nich użytkownik dodaje ręcznie (zrzut ekranu / wklejony opis wydarzenia)."""
+    host = (urlparse(url or "").hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in FACEBOOK_HOSTS)
+
+
 def make_source(url: str, name: str | None = None, organizer: str | None = None,
                 enabled: bool = True, base_url: str | None = None,
                 detail_link_pattern: str | None = None, max_detail_pages: int | None = None) -> Source:

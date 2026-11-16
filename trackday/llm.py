@@ -7,10 +7,15 @@ Agent nie woła SDK bezpośrednio - używa interfejsu ``StructuredLLM``. Dzięki
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
-from typing import Callable, Generic, Protocol, TypeVar
+from functools import lru_cache
+from typing import TYPE_CHECKING, Callable, Generic, Protocol, TypeVar
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from trackday.tools.images import PreparedImage
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -30,7 +35,8 @@ class LLMResult(Generic[T]):
 class StructuredLLM(Protocol):
     model: str
 
-    def extract(self, system: str, user: str, schema: type[T]) -> LLMResult[T]: ...
+    def extract(self, system: str, user: str, schema: type[T],
+                images: list[PreparedImage] | None = None) -> LLMResult[T]: ...
 
 
 class AnthropicLLM:
@@ -45,14 +51,20 @@ class AnthropicLLM:
         # Bez api_key SDK samo szuka poświadczeń (ANTHROPIC_API_KEY, profil `ant`).
         self.client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
 
-    def extract(self, system: str, user: str, schema: type[T]) -> LLMResult[T]:
+    def extract(self, system: str, user: str, schema: type[T],
+                images: list[PreparedImage] | None = None) -> LLMResult[T]:
         a = self._anthropic
+        content: str | list[dict] = user
+        if images:  # obrazy (base64) przed tekstem polecenia
+            content = [{"type": "image", "source": {"type": "base64", "media_type": im.media_type,
+                                                    "data": base64.standard_b64encode(im.data).decode()}}
+                       for im in images] + [{"type": "text", "text": user}]
         try:
             response = self.client.messages.parse(
                 model=self.model,
                 max_tokens=16000,
                 system=system,
-                messages=[{"role": "user", "content": user}],
+                messages=[{"role": "user", "content": content}],
                 output_format=schema,
                 output_config={"effort": self.effort},
             )
@@ -111,16 +123,21 @@ class OllamaLLM:
         self.num_ctx = num_ctx
         self.timeout_s = timeout_s
 
-    def extract(self, system: str, user: str, schema: type[T]) -> LLMResult[T]:
+    def extract(self, system: str, user: str, schema: type[T],
+                images: list[PreparedImage] | None = None) -> LLMResult[T]:
         import requests
         from pydantic import ValidationError
 
+        user_msg: dict = {"role": "user", "content": user}
+        if images:
+            user_msg["images"] = [base64.standard_b64encode(im.data).decode() for im in images]
         body = {
             "model": self.model,
             "stream": False,
+            "think": False,  # modele z „myśleniem” (np. gemma4) - bez niego szybciej i bez zakłóceń JSON
             "format": schema.model_json_schema(),
             "options": {"temperature": 0, "num_ctx": self.num_ctx},
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "messages": [{"role": "system", "content": system}, user_msg],
         }
         try:
             resp = requests.post(f"{self.base_url}/api/chat", json=body, timeout=self.timeout_s)
@@ -156,6 +173,27 @@ def list_ollama_models(base_url: str = "http://localhost:11434") -> list[str]:
     return [n for n in names if not any(x in n.lower() for x in ("embed", "bge-", "bge:", "nomic"))]
 
 
+@lru_cache(maxsize=64)
+def ollama_supports_vision(model: str, base_url: str = "http://localhost:11434") -> bool:
+    """Czy lokalny model czyta obrazy (Ollama zgłasza wtedy możliwość 'vision')."""
+    import requests
+
+    try:
+        info = requests.post(f"{_ollama_base(base_url)}/api/show", json={"model": model}, timeout=5).json()
+    except (requests.RequestException, ValueError):
+        return False
+    return "vision" in (info.get("capabilities") or [])
+
+
+def supports_vision(model_id: str, ollama_url: str = "http://localhost:11434") -> bool:
+    """Modele Claude czytają obrazy; modele lokalne - tylko te z możliwością 'vision' (np. gemma3, llava)."""
+    from trackday.config import OLLAMA_PREFIX
+
+    if model_id.startswith(OLLAMA_PREFIX):
+        return ollama_supports_vision(model_id.removeprefix(OLLAMA_PREFIX), ollama_url)
+    return True
+
+
 def create_llm(model_id: str, settings, api_key: str | None = None) -> StructuredLLM:
     """Tworzy klienta modelu na podstawie identyfikatora: 'ollama:<nazwa>' albo model Claude."""
     from trackday.config import OLLAMA_PREFIX
@@ -179,8 +217,11 @@ class FakeLLM:
         self.responder = responder
         self.model = model
         self.calls: list[tuple[str, str]] = []
+        self.images: list[list] = []
 
-    def extract(self, system: str, user: str, schema: type[T]) -> LLMResult[T]:
+    def extract(self, system: str, user: str, schema: type[T],
+                images: list[PreparedImage] | None = None) -> LLMResult[T]:
         self.calls.append((system, user))
+        self.images.append(list(images or []))
         out = self.responder(system, user)
         return LLMResult(parsed=schema.model_validate(out.model_dump()), model=self.model)

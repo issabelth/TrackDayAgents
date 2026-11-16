@@ -12,15 +12,17 @@ import pandas as pd
 import streamlit as st
 
 from trackday.agents.event_scout import EventScoutAgent, ScoutInput
+from trackday.agents.event_scout import _parse_time as parse_time
 from trackday.agents.prompts import EVENT_SCOUT_SYSTEM
 from trackday.config import CLAUDE_MODELS, OLLAMA_PREFIX, get_settings
 from trackday.evaluation import golden_as_events
-from trackday.llm import create_llm, is_local, list_ollama_models
+from trackday.llm import create_llm, is_local, list_ollama_models, supports_vision
 from trackday.models import ExtractionResult, ScoutReport, TrackDayEvent
-from trackday.sources import SourceError, load_sources, make_source
+from trackday.sources import SourceError, is_facebook_url, load_sources, make_source
+from trackday.tools.images import MAX_IMAGES, ImageError, prepare_image
 from trackday.tools.normalize import (COL_ALIASES, COL_COORDS, COL_COUNTRY, COL_LINK, COL_NAME, GMAPS_COLUMN,
                                       TRACK_COLUMNS, build_tracks, default_track_defs, google_maps_url, match_track,
-                                      track_row, tracks_from_rows)
+                                      event_id, track_row, tracks_from_rows)
 from trackday.views import all_groups, group_by_day
 from trackday.storage.db import EventRepository
 
@@ -224,6 +226,125 @@ with tab_sources:
         for err in errs:
             st.error(err)
         st.warning("Nie zapisano zmian - popraw błędy i spróbuj ponownie.")
+
+    # ---------------------------------------------------------- terminy dodawane ręcznie
+    st.divider()
+    st.subheader("Dodaj terminy ręcznie")
+    st.caption("Dla organizatorów, którzy publikują terminy na Facebooku: kalendarz sezonu jako zdjęcie w poście "
+               "albo wydarzenie przed konkretnym torowaniem. Facebook nie pozwala agentowi pobierać swoich stron, "
+               "więc wgraj **zrzut ekranu** albo wklej **opis wydarzenia** - agent odczyta terminy, a Ty je "
+               "przejrzysz i zatwierdzisz przed zapisem. Działa też dla zwykłych stron.")
+    http_sources = sorted([x for x in saved if x.url.startswith(("http://", "https://"))],
+                          key=lambda x: (not is_facebook_url(x.url), x.name.lower()))
+    track_names = [t.name for t in repo.list_tracks()]
+    AUTO_TRACK = "— odczytaj z treści —"
+    vision = {m: supports_vision(m, settings.ollama_url) for m in model_ids}
+    default_vision = model if vision.get(model) else next(
+        (m for m in model_ids if vision[m] and is_local(m) and "gemma4" in m),
+        next((m for m in model_ids if vision[m] and is_local(m)), model_ids[0] if model_ids else None))
+
+    def save_manual(src_id: str, rep: ScoutReport, edited: pd.DataFrame) -> None:
+        keep = []
+        for ev, row in zip(rep.events, edited.to_dict("records")):
+            if not row.get("Zapisz"):
+                continue
+            day = pd.Timestamp(row["Data"]).date() if pd.notna(row.get("Data")) else ev.date_start
+            hour = parse_time(str(row.get("Godzina") or "")) or None
+            layout = (str(row.get("Odmiana") or "").strip()[:60]) or None
+            name = str(row.get("Nazwa") or "").strip() or ev.name
+            keep.append(ev.model_copy(update={
+                "date_start": day, "date_end": ev.date_end if ev.date_end and ev.date_end > day else None,
+                "start_time": hour, "track_layout": layout, "name": name,
+                "id": event_id(ev.organizer, ev.track, day, extra=f"manual {hour or ''} {layout or ''}".strip())}))
+        repo.upsert_events(keep)
+        st.session_state.pop(f"manual_result_{src_id}", None)
+        st.session_state[f"manual_ver_{src_id}"] = st.session_state.get(f"manual_ver_{src_id}", 0) + 1
+        st.toast(f"Zapisano terminy: {len(keep)} - widać je w zakładce Terminy.")
+
+    if not http_sources:
+        st.info("Najpierw dodaj stronę organizatora do listy powyżej (np. adres jego wydarzeń na Facebooku).")
+    for src in http_sources:
+        fb = is_facebook_url(src.url)
+        ver = st.session_state.get(f"manual_ver_{src.id}", 0)
+        with st.expander(f"{'📘' if fb else '🌐'} Dodaj terminy - **{src.name}**" + (" (Facebook)" if fb else ""),
+                         key=f"manual_exp_{src.id}"):
+            if fb:
+                st.link_button("Otwórz wydarzenia na Facebooku", src.url, icon=":material/open_in_new:")
+                st.caption("Kalendarz sezonu: zrób zrzut ekranu zdjęcia z posta (Win+Shift+S). Wydarzenie: zrzut "
+                           "ekranu strony wydarzenia albo skopiowany opis (data, godzina, cena, grupy).")
+            c1, c2 = st.columns(2)
+            m_track = c1.selectbox("Tor, którego dotyczą terminy", [AUTO_TRACK] + track_names,
+                                   key=f"manual_track_{src.id}",
+                                   help="Wybrany tor zostanie przypisany wszystkim odczytanym terminom. Brakuje "
+                                        "toru? Dodaj go w zakładce Tory.")
+            m_model = c2.selectbox(
+                "Model", model_ids, key=f"manual_model_{src.id}",
+                index=model_ids.index(default_vision) if default_vision in model_ids else 0,
+                format_func=lambda m: ("📷 " if vision.get(m) else "") + models.get(m, m),
+                help="📷 = model czyta obrazy (potrzebne do zrzutów ekranu). Lokalnie: gemma4 / gemma3.")
+            files = st.file_uploader("Zrzuty ekranu (PNG / JPG)", type=["png", "jpg", "jpeg", "webp"],
+                                     accept_multiple_files=True, key=f"manual_files_{src.id}_{ver}")
+            m_text = st.text_area("…i/lub wklej opis wydarzenia / treść posta", key=f"manual_text_{src.id}_{ver}",
+                                  height=100)
+            if st.button("Odczytaj terminy", key=f"manual_read_{src.id}", icon=":material/document_scanner:",
+                         type="primary"):
+                images, img_errors = [], []
+                for f in (files or [])[:MAX_IMAGES]:
+                    try:
+                        images.append(prepare_image(f.getvalue(), f.name))
+                    except ImageError as err:
+                        img_errors.append(str(err))
+                if files and len(files) > MAX_IMAGES:
+                    img_errors.append(f"Naraz można odczytać {MAX_IMAGES} zrzutów - pozostałe pominięto.")
+                for err in img_errors:
+                    st.error(err)
+                if images and not vision.get(m_model):
+                    st.error("Wybrany model nie czyta obrazów - wybierz model oznaczony 📷.")
+                elif not images and not (m_text or "").strip():
+                    st.warning("Dodaj zrzut ekranu albo wklej opis wydarzenia.")
+                elif not is_local(m_model) and not api_key:
+                    st.error("Model Claude wymaga klucza API - wybierz model lokalny albo podaj klucz.")
+                else:
+                    with st.spinner("Agent odczytuje terminy… (model lokalny: ok. 1 min na zrzut ekranu)"):
+                        agent = EventScoutAgent(create_llm(m_model, settings, api_key), settings=settings,
+                                                repository=repo)
+                        st.session_state[f"manual_result_{src.id}"] = agent.import_manual(
+                            src, images=images, text=m_text, reference_date=ref_date,
+                            track=None if m_track == AUTO_TRACK else m_track)
+
+            rep = st.session_state.get(f"manual_result_{src.id}")
+            if rep is not None:
+                sr = rep.sources[0]
+                if not sr.ok:
+                    st.error(sr.error or "Nie udało się odczytać terminów.")
+                for w in sr.warnings:
+                    st.caption(f"⚠️ {w}")
+                if sr.suspicious_content:
+                    st.warning("Treść zawiera podejrzane instrukcje (możliwy prompt injection) - sprawdź terminy "
+                               "szczególnie uważnie.")
+                if rep.events:
+                    st.markdown(f"Odczytane terminy: **{len(rep.events)}** - popraw daty lub godziny, jeśli trzeba, "
+                                "odznacz błędne i zapisz.")
+                    preview = pd.DataFrame([{
+                        "Zapisz": True, "Data": e.date_start, "Godzina": e.start_time or "",
+                        "Odmiana": e.track_layout or "", "Nazwa": e.name, "Tor": e.track,
+                        "Uwagi": "; ".join(i for i in e.issues if i != "dodane ręcznie przez użytkownika"),
+                    } for e in rep.events])
+                    edited_manual = st.data_editor(
+                        preview, key=f"manual_editor_{src.id}_{rep.run_id}", hide_index=True, width="stretch",
+                        num_rows="fixed", disabled=["Tor", "Uwagi"],
+                        column_config={
+                            "Zapisz": st.column_config.CheckboxColumn(width="small"),
+                            "Data": st.column_config.DateColumn(format="DD.MM.YYYY", required=True),
+                            "Godzina": st.column_config.TextColumn(width="small", help="np. 13:30 (opcjonalnie)"),
+                            "Odmiana": st.column_config.TextColumn(width="small", help="np. REVERS"),
+                        },
+                    )
+                    st.button("Zapisz zaznaczone terminy", key=f"manual_save_{src.id}", type="primary",
+                              icon=":material/save:", on_click=save_manual, args=(src.id, rep, edited_manual))
+                elif sr.ok:
+                    st.info("Model nie znalazł żadnych terminów w tych materiałach.")
+
 
 with tab_tracks:
     st.subheader("Znane tory")

@@ -20,7 +20,7 @@ from urllib.parse import urljoin
 from pydantic import BaseModel, Field, ValidationError
 
 from trackday.agents.base import BaseAgent
-from trackday.agents.prompts import EVENT_SCOUT_SYSTEM, EVENT_SCOUT_USER_TEMPLATE
+from trackday.agents.prompts import EVENT_SCOUT_SYSTEM, EVENT_SCOUT_USER_TEMPLATE, MANUAL_IMPORT_USER_TEMPLATE
 from trackday.config import Settings, get_settings
 from trackday.llm import LLMError, StructuredLLM
 from trackday.models import (
@@ -33,8 +33,10 @@ from trackday.models import (
     SourceReport,
     TrackDayEvent,
 )
+from trackday.sources import is_facebook_url
 from trackday.storage.db import EventRepository
 from trackday.tools.fetch import FetchError, fetch_source, fetch_url
+from trackday.tools.images import PreparedImage
 from trackday.tools.html_clean import extract_links, html_to_text, split_into_chunks
 from trackday.tools.normalize import build_tracks, deduplicate, default_track_defs, event_id, match_track
 from trackday.tools.variants import extract_variants
@@ -113,6 +115,90 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
         report.finished_at = datetime.now()
         return report
 
+    def import_manual(self, src: Source, *, images: list[PreparedImage] | None = None, text: str | None = None,
+                      track: str | None = None, reference_date: date | None = None) -> ScoutReport:
+        """Terminy dodane ręcznie przez użytkownika: zrzuty ekranu (np. kalendarz z Facebooka) i/lub wklejony
+        opis wydarzenia. ``track`` - tor wybrany przez użytkownika (dotyczy wszystkich terminów).
+
+        Zwraca raport z terminami do przejrzenia - NIE zapisuje ich w bazie (robi to UI po akceptacji).
+        Terminy mają ``source_id = "manual:<id źródła>"``, więc automatyczne przeszukanie strony ich nie usuwa.
+        """
+        ref = reference_date or date.today()
+        images = images or []
+        report = ScoutReport(run_id="manual-" + uuid.uuid4().hex[:6], started_at=datetime.now(),
+                             model=self.llm.model, reference_date=ref)
+        self._tracks = None
+        if self.repository is not None:
+            self.repository.init_tracks(default_track_defs())
+            self._tracks = build_tracks(self.repository.list_tracks())
+        msrc = src.model_copy(update={"id": f"manual:{src.id}"})
+        sr = SourceReport(source_id=msrc.id, source_name=f"{src.name} (dodane ręcznie)")
+        report.sources.append(sr)
+
+        clean, warns = sanitize_text(text or "", self.settings.max_pasted_chars)
+        sr.warnings.extend(warns)
+        if not images and not clean.strip():
+            sr.ok, sr.error = False, "Dodaj zrzut ekranu albo wklej opis wydarzenia."
+            report.finished_at = datetime.now()
+            return report
+        if hits := detect_injection(clean):
+            sr.suspicious_content = True
+            sr.warnings.append(f"Wykryto {len(hits)} podejrzanych fragmentów (możliwy prompt injection): "
+                               + " || ".join(h[:120] for h in hits[:3]))
+
+        materials = ", ".join(x for x in (f"{len(images)} zrzut(y) ekranu" if images else "",
+                                          "wklejony tekst" if clean.strip() else "") if x)
+        user = MANUAL_IMPORT_USER_TEMPLATE.format(
+            reference_date=ref.isoformat(),
+            organizer=src.organizer or src.name,
+            track_info=track or "odczytaj z treści",
+            materials=materials,
+            track_rule=(f"Wszystkie terminy dotyczą toru „{track}” - wpisz go w polu track."
+                        if track else "Nazwę toru odczytaj z treści; bez toru nie twórz wydarzenia."),
+            document=wrap_untrusted(clean, "tekst wklejony przez użytkownika") if clean.strip()
+            else "(brak tekstu - tylko obrazy)",
+        )
+        sr.chars_sent_to_llm = len(user)
+        report.steps.append(AgentStep(tool="input", detail=f"{src.name}: {materials}."))
+        try:
+            result = self.llm.extract(EVENT_SCOUT_SYSTEM, user, ExtractionResult, images=images)
+        except LLMError as e:
+            sr.ok, sr.error = False, str(e)
+            report.steps.append(AgentStep(tool="llm_extract", detail=f"{src.name}: {e}", ok=False))
+            report.finished_at = datetime.now()
+            return report
+        report.input_tokens, report.output_tokens = result.input_tokens, result.output_tokens
+        parsed: ExtractionResult = result.parsed
+        sr.warnings.extend(parsed.warnings)
+        sr.suspicious_content = sr.suspicious_content or parsed.suspicious_instructions
+        sr.raw_events = len(parsed.events)
+        report.steps.append(AgentStep(tool="llm_extract", detail=f"model {result.model} zwrócił "
+                                      f"{len(parsed.events)} terminów ({result.input_tokens} tok. wej.)."))
+
+        page_url = src.url if src.url.startswith(("http://", "https://")) else None
+        events: list[TrackDayEvent] = []
+        for ev in parsed.events:
+            if track:
+                ev.track = track
+            converted, problem = self._to_event(ev, msrc, page_url, ref)
+            if converted is None:
+                sr.rejected_events += 1
+                sr.warnings.append(f"Odrzucono wpis '{ev.name}': {problem}")
+                continue
+            issues = [i for i in converted.issues if i != "brak linku do wydarzenia - użyto strony organizatora"]
+            # kilka sesji jednego dnia (różne godziny) to osobne terminy
+            events.append(converted.model_copy(update={
+                "issues": ["dodane ręcznie przez użytkownika"] + issues,
+                "id": event_id(converted.organizer, converted.track, converted.date_start,
+                               extra=f"manual {converted.start_time or ''} {converted.track_layout or ''}".strip()),
+            }))
+        report.events, report.duplicates_removed = deduplicate(events, {msrc.id: src.organizer} if src.organizer else {})
+        sr.valid_events = len(report.events)
+        report.steps.append(AgentStep(tool="validate", detail=f"{len(report.events)} poprawnych, "
+                                                              f"{sr.rejected_events} odrzuconych."))
+        report.finished_at = datetime.now()
+        return report
+
     # ------------------------------------------------------------ internals
     def _process_source(self, src: Source, data: ScoutInput, report: ScoutReport
                         ) -> tuple[SourceReport, list[TrackDayEvent]]:
@@ -126,6 +212,13 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
             sr.warnings.extend(warns)
             pages.append((src.name, text, "", None, []))
             report.steps.append(AgentStep(tool="input", detail=f"{src.name}: {len(text)} znaków."))
+        elif is_facebook_url(src.url):
+            sr.warnings.append("Facebook nie pozwala robotom pobierać stron (robots.txt) i wymaga zalogowania - "
+                               "terminy tego organizatora dodaj ręcznie: zakładka Źródła → Dodaj terminy "
+                               "(zrzut ekranu kalendarza albo opis wydarzenia).")
+            report.steps.append(AgentStep(tool="fetch_source", detail=f"{src.name}: Facebook - pominięto "
+                                                                      "(terminy dodaje się ręcznie)."))
+            return sr, []
         else:
             try:
                 fetched = fetch_source(src, self.settings)
@@ -301,7 +394,8 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
         if start < ref:
             issues.append("termin w przeszłości")
 
-        start_time = _parse_time(ev.start_time) or _parse_time(ev.name, require_hint=True)
+        start_time = (_parse_time(ev.start_time) or _parse_time(ev.name, require_hint=True)
+                      or _parse_time(ev.notes, require_hint=True))
         track_layout = (ev.track_layout or "").strip()[:60] or None
         if track_layout is None and re.search(r"\brevers(e)?\b", ev.name, re.I):
             track_layout = "REVERS"

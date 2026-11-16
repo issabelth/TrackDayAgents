@@ -89,6 +89,7 @@ Agent obsługuje dwóch dostawców modelu – wybór w panelu bocznym:
 |---|---|---|
 | 1 | `fetch_source` | pobiera stronę (http/https z walidacją adresu i `robots.txt`, limit rozmiaru) lub plik przykładowy `sample://` |
 | 1a | `find_detail_links` + `fetch_detail` | **tryb „lista → podstrony”** (opcjonalny, ustawiany dla źródła): zbiera widoczne linki z tej samej domeny pasujące do wzorca, pobiera każdą podstronę (robots.txt, przerwa 0,5 s, limit podstron) – model analizuje każdą podstronę osobno, a jej adres staje się linkiem wydarzenia |
+| 1b | `import_manual` | **terminy dodane ręcznie** (np. z Facebooka): zrzuty ekranu (`prepare_image`) i/lub wklejony opis -> model czytający obrazy -> ta sama walidacja; tor wybrany przez użytkownika; wynik do przejrzenia przed zapisem |
 | 2a | `extract_variants` | **warianty sesja × grupa** ze sklepu WooCommerce: wszystkie warianty, cena i liczba wolnych miejsc („3 w magazynie”) odczytywane deterministycznie z danych formularza (`data-product_variations`) – bez modelu, pewniej i bez tokenów; grupy wydarzenia = grupy, które naprawdę można wybrać, wolne miejsca = suma wariantów |
 | 2 | `html_to_text` | usuwa skrypty, style i **ukryte elementy**, zamienia tabele na wiersze, linki na `tekst [link: URL]` |
 | 3 | `detect_injection` | heurystyczny detektor poleceń dla AI (PL/EN) – ostrzeżenie w raporcie |
@@ -140,7 +141,10 @@ Treść stron jest niezaufana (pośredni prompt injection), dlatego:
 4. wyjście modelu jest walidowane schematem; linki muszą prowadzić do domeny organizatora (inaczej są zastępowane stroną źródła);
 5. filtr wejścia użytkownika: normalizacja Unicode, usuwanie znaków niewidocznych, limit długości;
 6. pobieranie stron tylko http(s) do adresów publicznych (ochrona SSRF, także po przekierowaniach), z poszanowaniem `robots.txt`;
-7. klucz API tylko w `.env` (w `.gitignore`) lub w polu hasła w UI – nie jest zapisywany.
+7. zrzuty ekranu: tylko prawdziwe obrazy (sprawdzane przez Pillow), limit 15 MB / 60 Mpx / 6 plików, zmniejszane
+   przed wysłaniem; tekst z obrazów model traktuje jak dokument niezaufany, a linki spoza strony organizatora są
+   zastępowane jej adresem; terminy trafiają do bazy dopiero po akceptacji użytkownika;
+8. klucz API tylko w `.env` (w `.gitignore`) lub w polu hasła w UI – nie jest zapisywany.
 
 ## 4. Aplikacja Streamlit
 
@@ -151,6 +155,12 @@ Treść stron jest niezaufana (pośredni prompt injection), dlatego:
   dodawanie i usuwanie stron, włączanie/wyłączanie, nazwa i organizator, a dla stron, które są tylko listą
   wydarzeń – **wzorzec linków do podstron** i limit podstron (agent wchodzi w każdą pasującą podstronę). Lista jest zapisywana w SQLite; przy pierwszym
   uruchomieniu wypełniają ją strony przykładowe z `data/sources.json`. „Wyczyść zebrane terminy” nie usuwa źródeł.
+  **Dodaj terminy ręcznie** – przy każdym organizatorze (najpierw strony z Facebooka): przycisk otwierający jego
+  wydarzenia na Facebooku, wybór toru, wgranie **zrzutów ekranu** (np. kalendarz sezonu opublikowany jako zdjęcie)
+  i/lub wklejenie opisu wydarzenia. Agent odczytuje terminy modelem czytającym obrazy (lokalnie `gemma4:e4b` /
+  `gemma3:4b`, ok. 1 min na zrzut; albo Claude), wybrany tor przypisuje wszystkim terminom, a użytkownik przegląda
+  je w tabeli (data, godzina, odmiana, odznaczenie błędnych) i dopiero wtedy zapisuje. Terminy dodane ręcznie mają
+  osobne źródło (`manual:…`), więc automatyczne przeszukanie ich nie usuwa.
 - **Terminy:** **jeden wiersz na dzień i tor** (`st.expander`: dzień tygodnia, data, tor, organizator, liczba wydarzeń
   i wyborów, cena od, suma wolnych miejsc); po rozwinięciu – tabela wszystkich wyborów: godzina, wydarzenie,
   nitka/odmiana (np. REVERS), grupa, wolne miejsca, cena, sesja, link. Filtr **„Grupy / poziom”** w panelu bocznym
@@ -208,7 +218,7 @@ Szczegóły: [docs/testy.md](docs/testy.md).
 ```bash
 .venv\Scripts\python.exe -m pytest
 ```
-Wynik: **79 testów – wszystkie zaliczone.**
+Wynik: **91 testów – wszystkie zaliczone.**
 
 **Testy z prawdziwym modelem** – zestaw wzorcowy 20 wydarzeń (3 strony organizatorów, różne formaty: tabela,
 karty, tekst blogowy) + 11 przypadków szczególnych (brak roku, przedział cen, „ostatnie miejsca”, nieprecyzyjna
@@ -231,7 +241,11 @@ godzina rozpoczęcia i nitka REVERS rozróżniają dwa wydarzenia tego samego dn
 
 - **Źródła:** w repozytorium są strony przykładowe fikcyjnych organizatorów (domena `.example`); prawdziwe strony
   można wpisać w UI, ale brak dedykowanych adapterów i obsługi stron dynamicznych (JavaScript → Playwright w kolejnym etapie).
-  Facebook – tylko przez ręczne wklejenie treści. Tryb podstron wymaga ręcznie dobranego wzorca linków dla każdej
+  **Facebook** zabrania robotom pobierania stron (`robots.txt`: `User-agent: * Disallow: /`), wymaga zalogowania,
+  a regulamin Meta zabrania automatycznego zbierania danych; API wydarzeń cudzych stron nie jest dostępne. Agent
+  pomija więc adresy Facebooka (z ostrzeżeniem w raporcie), a terminy z nich dodaje się ręcznie: zrzut ekranu
+  kalendarza lub wydarzenia albo wklejony opis (zakładka Źródła → Dodaj terminy). Odczyt zrzutu przez mały model
+  lokalny bywa niedokładny (np. pominięta godzina) – dlatego terminy są przeglądane przed zapisem. Tryb podstron wymaga ręcznie dobranego wzorca linków dla każdej
   witryny; każda podstrona to osobne wywołanie modelu (lokalnie ok. 10 s na podstronę). Warianty są odczytywane
   tylko ze sklepów WooCommerce, które zapisują je w kodzie strony (gdy sklep wczytuje je JavaScriptem – ostrzeżenie
   w raporcie). Nazwa sesji ze sklepu bywa niespójna z tytułem (np. „Sesja popołudniowa” przy godz. 13:30) – godzinę
@@ -261,6 +275,7 @@ trackday/
   tools/security.py         # detekcja prompt injection, filtr wejścia, walidacja URL
   tools/normalize.py        # normalizacja torów, deduplikacja
   tools/maps_link.py        # link do obiektu w Mapach Google -> współrzędne toru
+  tools/images.py           # zrzuty ekranu: walidacja, zmniejszenie (terminy dodawane ręcznie)
   storage/db.py             # SQLite
   evaluation.py             # porównanie z zestawem wzorcowym
 data/sources.json           # lista źródeł
