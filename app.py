@@ -89,9 +89,14 @@ if demo_clicked:
 if run_clicked:
     srcs = active_sources
     if not srcs and not pasted.strip():
-        st.sidebar.error("Brak aktywnych źródeł - dodaj stronę w zakładce Źródła lub wklej treść.")
+        msg = "Brak aktywnych źródeł - dodaj stronę w zakładce Źródła lub wklej treść."
+        st.error(msg, icon=":material/error:")
+        st.toast(msg, icon=":material/error:")
     elif not api_key:
-        st.sidebar.error("Brak klucza ANTHROPIC_API_KEY (plik .env lub pole powyżej).")
+        msg = ("Agent nie wystartował: brak klucza ANTHROPIC_API_KEY. Wpisz go w pole „ANTHROPIC_API_KEY” "
+               "w panelu bocznym albo zapisz w pliku .env (wzór: .env.example) i uruchom aplikację ponownie.")
+        st.error(msg, icon=":material/key_off:")
+        st.toast("Brak klucza ANTHROPIC_API_KEY", icon=":material/key_off:")
     else:
         agent = EventScoutAgent(AnthropicLLM(model=model, api_key=api_key, effort=settings.effort),
                                 settings=settings, repository=repo)
@@ -196,7 +201,7 @@ with tab_events:
     low = [e for e in events if e.seats_left is not None and 0 < e.seats_left < 3]
     c4.metric("Prawie wyprzedane (<3 miejsca)", len(low))
     if not events:
-        st.info("Brak terminów. Wybierz źródła w panelu bocznym i kliknij **Szukaj terminów** "
+        st.info("Brak terminów. Sprawdź listę stron w zakładce Źródła i kliknij **Szukaj terminów** "
                 "(albo wczytaj tryb demo).")
     else:
         df = events_df(events)
