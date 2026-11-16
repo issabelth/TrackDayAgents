@@ -9,7 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Iterator
 
-from trackday.models import ScoutReport, TrackDayEvent
+from trackday.models import ScoutReport, Source, TrackDayEvent
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -39,6 +39,18 @@ CREATE TABLE IF NOT EXISTS runs (
     model       TEXT NOT NULL,
     n_events    INTEGER NOT NULL,
     report      TEXT NOT NULL             -- pełny JSON ScoutReport
+);
+
+-- Stała lista źródeł przeszukiwanych przez agenta (edytowana w zakładce "Źródła")
+CREATE TABLE IF NOT EXISTS sources (
+    id          TEXT PRIMARY KEY,
+    position    INTEGER NOT NULL,
+    data        TEXT NOT NULL             -- pełny JSON Source
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key         TEXT PRIMARY KEY,
+    value       TEXT
 );
 """
 
@@ -88,8 +100,31 @@ class EventRepository:
                        len(report.events), report.model_dump_json()))
 
     def clear(self) -> None:
+        """Usuwa zebrane terminy i przebiegi agenta. Lista źródeł zostaje."""
         with self._conn() as c:
             c.executescript("DELETE FROM seat_history; DELETE FROM events; DELETE FROM runs;")
+
+    # ---------------------------------------------------------------- źródła
+    def list_sources(self) -> list[Source]:
+        with self._conn() as c:
+            return [Source.model_validate_json(r[0])
+                    for r in c.execute("SELECT data FROM sources ORDER BY position")]
+
+    def save_sources(self, sources: list[Source]) -> None:
+        """Zastępuje całą listę źródeł (kolejność = kolejność na liście)."""
+        with self._conn() as c:
+            c.execute("DELETE FROM sources")
+            c.executemany("INSERT INTO sources VALUES (?,?,?)",
+                          [(s.id, i, s.model_dump_json()) for i, s in enumerate(sources)])
+            c.execute("INSERT OR REPLACE INTO meta VALUES ('sources_initialized', '1')")
+
+    def init_sources(self, defaults: list[Source]) -> None:
+        """Przy pierwszym uruchomieniu wpisuje źródła domyślne. Później nie nadpisuje listy,
+        nawet gdy użytkownik usunie wszystkie wpisy."""
+        with self._conn() as c:
+            done = c.execute("SELECT 1 FROM meta WHERE key='sources_initialized'").fetchone()
+        if not done:
+            self.save_sources(defaults)
 
     # ---------------------------------------------------------------- odczyt
     def list_events(self, date_from: date | None = None, date_to: date | None = None,

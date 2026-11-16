@@ -9,5 +9,7 @@ data/*.db-journal
 # treść zadania od prowadzącego - nie publikujemy
 2026.11.08_PAAI_Lab2.pdf
 .claude/
+.vs/
+PythonSettings.json
 .idea/
 .vscode/

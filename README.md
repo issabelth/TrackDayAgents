@@ -27,7 +27,7 @@ Strażnik Miejsc i Doradca. Do implementacji wybrałam **Agenta 1 – Poszukiwac
 | Pytanie | Odpowiedź |
 |---|---|
 | **Jaką rolę pełnił agent w zaprojektowanym systemie?** | Zbiera informacje o torowaniach ze stron organizatorów: przeszukuje źródła, wyciąga z tekstu/HTML dane (nazwa, data, tor, organizator, cena, grupy, link, liczba miejsc), deduplikuje wpisy i zapisuje je w bazie. Jego wynik jest wejściem dla Agentów 2, 3 i 4. |
-| **Jakie zadanie realizuje w pierwszej wersji?** | Dla wybranych źródeł (strony przykładowe 3 organizatorów, własne adresy URL lub wklejony tekst, np. post z Facebooka) pobiera treść, przekazuje ją do modelu językowego, który zwraca ustrukturyzowaną listę torowań; agent waliduje i normalizuje dane, usuwa duplikaty i zapisuje wynik w SQLite. |
+| **Jakie zadanie realizuje w pierwszej wersji?** | Dla stałej listy źródeł (strony przykładowe 3 organizatorów i dowolne dodane strony WWW) oraz opcjonalnie wklejonego tekstu, np. post z Facebooka) pobiera treść, przekazuje ją do modelu językowego, który zwraca ustrukturyzowaną listę torowań; agent waliduje i normalizuje dane, usuwa duplikaty i zapisuje wynik w SQLite. |
 | **Jakie informacje otrzymuje?** | Listę źródeł (`Source`: nazwa, organizator, URL), opcjonalnie wklejony tekst, oraz datę referencyjną (do uzupełniania brakującego roku w datach). |
 | **Jaki wynik zwraca?** | `ScoutReport`: listę zwalidowanych wydarzeń `TrackDayEvent` (JSON – kontrakt dla kolejnych agentów), raport per źródło (ile wydarzeń, ile odrzuconych, ostrzeżenia, podejrzana treść), ślad kroków i zużycie tokenów. |
 | **Dlaczego zaczynam od niego?** | Bez danych o wydarzeniach pozostali agenci nie mają na czym pracować, a ekstrakcja danych z różnorodnych, nieustrukturyzowanych stron to **największe ryzyko projektu** – warto je zweryfikować najwcześniej. To także agent, który najbardziej potrzebuje LLM (rozumienie tekstu), a jednocześnie najbardziej narażony na prompt injection. |
@@ -132,9 +132,12 @@ Treść stron jest niezaufana (pośredni prompt injection), dlatego:
 
 ## 4. Aplikacja Streamlit
 
-- **Panel boczny:** wybór organizatorów, własne adresy URL, pole na wklejony tekst, wybór modelu, data referencyjna,
-  przycisk **„Szukaj terminów (uruchom agenta)”**, tryb demo (bez LLM), filtry (zakres dat, maks. koszt, tory,
-  organizatorzy, tylko z wolnymi miejscami).
+- **Panel boczny:** lista aktywnych źródeł, pole na jednorazowo wklejony tekst, wybór modelu, data referencyjna,
+  przycisk **„Szukaj terminów (uruchom agenta)”** (lub Ctrl+Enter w polu tekstowym), tryb demo (bez LLM), filtry
+  (zakres dat, maks. koszt, tory, organizatorzy, tylko z wolnymi miejscami).
+- **Źródła:** stała lista stron przeszukiwanych przy każdym uruchomieniu agenta, edytowana w tabeli (`st.data_editor`):
+  dodawanie i usuwanie stron, włączanie/wyłączanie, nazwa i organizator. Lista jest zapisywana w SQLite; przy pierwszym
+  uruchomieniu wypełniają ją strony przykładowe z `data/sources.json`. „Wyczyść zebrane terminy” nie usuwa źródeł.
 - **Terminy:** metryki, tabela z linkami i oceną pewności, karta szczegółów wydarzenia (`st.metric`), eksport JSON.
 - **Mapa:** tory z wynikami (`st.map`).
 - **Raport agenta:** wynik per źródło, ostrzeżenia (w tym wykryty prompt injection), ślad kroków i zużycie tokenów.
