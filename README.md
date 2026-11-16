@@ -157,8 +157,9 @@ Treść stron jest niezaufana (pośredni prompt injection), dlatego:
   pokazuje tylko wybory z zaznaczonych grup (razem z „Tylko z wolnymi miejscami” – tylko grupy z miejscami).
   Pod listą: karta szczegółów wydarzenia (`st.metric`) i eksport JSON.
 - **Mapa:** tory z wynikami (`st.map`).
-- **Tory:** lista znanych torów edytowana w tabeli: nazwa, kraj, **współrzędne** (format z Map Google, np.
-  `52.4176, 16.8089`; działa też `52,4176; 16,8089`) i inne nazwy używane przez organizatorów. Każdy tor ma link **otwórz ↗** do
+- **Tory:** lista znanych torów edytowana w tabeli: nazwa, kraj, **link do toru w Mapach Google** (pełny adres z
+  paska przeglądarki albo krótki `maps.app.goo.gl/…` z „Udostępnij” – współrzędne są z niego odczytywane przy
+  zapisie) lub ręcznie wpisane **współrzędne** (np. `52.4176, 16.8089`; działa też `52,4176; 16,8089`) i inne nazwy używane przez organizatorów. Każdy tor ma link **otwórz ↗** do
   Map Google. Zakładka podpowiada tory z zebranych terminów, których brakuje na liście, z linkiem do wyszukania ich
   w Mapach Google. Po zapisaniu zebrane terminy są dopasowywane ponownie
   (nazwa toru i współrzędne – od razu widać je na mapie). Przy pierwszym uruchomieniu lista jest wypełniana z
@@ -207,7 +208,7 @@ Szczegóły: [docs/testy.md](docs/testy.md).
 ```bash
 .venv\Scripts\python.exe -m pytest
 ```
-Wynik: **71 testów – wszystkie zaliczone.**
+Wynik: **79 testów – wszystkie zaliczone.**
 
 **Testy z prawdziwym modelem** – zestaw wzorcowy 20 wydarzeń (3 strony organizatorów, różne formaty: tabela,
 karty, tekst blogowy) + 11 przypadków szczególnych (brak roku, przedział cen, „ostatnie miejsca”, nieprecyzyjna
@@ -259,6 +260,7 @@ trackday/
   tools/html_clean.py       # HTML -> tekst, usuwanie ukrytych elementów
   tools/security.py         # detekcja prompt injection, filtr wejścia, walidacja URL
   tools/normalize.py        # normalizacja torów, deduplikacja
+  tools/maps_link.py        # link do obiektu w Mapach Google -> współrzędne toru
   storage/db.py             # SQLite
   evaluation.py             # porównanie z zestawem wzorcowym
 data/sources.json           # lista źródeł

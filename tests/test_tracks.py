@@ -114,3 +114,60 @@ def test_google_maps_url():
     assert google_maps_url(52.4176, 16.8089) == "https://www.google.com/maps/search/?api=1&query=52.41760%2C16.80890"
     assert google_maps_url(query="Gazuu Racing Park") == \
         "https://www.google.com/maps/search/?api=1&query=Gazuu+Racing+Park"
+
+
+PLACE = ("https://www.google.com/maps/place/Tor+Pozna%C5%84/@52.4101,16.7900,15z/"
+         "data=!4m6!3m5!1s0x47044!8m2!3d52.4176!4d16.8089!16s%2Fg%2F11")
+
+
+@pytest.mark.parametrize("url,expected", [
+    (PLACE, (52.4176, 16.8089)),                                                    # pinezka obiektu przed @widok
+    ("https://www.google.com/maps/@50.0531,19.9343,14z", (50.0531, 19.9343)),
+    ("https://maps.google.com/?q=52.4176,16.8089", (52.4176, 16.8089)),
+    ("https://www.google.pl/maps/search/?api=1&query=52.41760%2C16.80890", (52.4176, 16.8089)),
+    ("https://www.google.com/maps/search/52.4176,+16.8089", (52.4176, 16.8089)),
+    ("https://consent.google.com/m?continue=https://www.google.com/maps/place/X/%4049.1,18.2,15z", (49.1, 18.2)),
+])
+def test_coords_from_maps_link(url, expected):
+    from trackday.tools.maps_link import resolve_maps_link
+
+    assert resolve_maps_link(url, get_location=lambda u: pytest.fail("bez sieci")) == expected
+
+
+def test_short_maps_link_follows_google_redirects_only():
+    from trackday.tools.maps_link import MapsLinkError, resolve_maps_link
+
+    hops = {"https://maps.app.goo.gl/abc": PLACE}
+    assert resolve_maps_link("https://maps.app.goo.gl/abc", get_location=hops.get) == (52.4176, 16.8089)
+
+    evil = {"https://maps.app.goo.gl/x": "https://evil.example/@52.1,21.0"}
+    with pytest.raises(MapsLinkError):
+        resolve_maps_link("https://maps.app.goo.gl/x", get_location=evil.get)
+    for bad in ["https://evil.example/maps/@52.1,21.0,15z", "https://www.google.com/maps/place/Tor+Pozna%C5%84",
+                "javascript:alert(1)", "52.1, 21.0"]:
+        with pytest.raises(MapsLinkError):
+            resolve_maps_link(bad, get_location=lambda u: None)
+
+
+def test_tracks_from_rows_with_maps_link():
+    from trackday.tools.normalize import track_row, tracks_from_rows
+
+    calls = []
+
+    def resolver(url):
+        calls.append(url)
+        return 52.4176, 16.8089
+
+    rows = [{"Nazwa": "Tor Poznań", "Link do Map Google": "https://maps.app.goo.gl/abc", "Współrzędne (szer., dł.)": ""}]
+    (t,), errors = tracks_from_rows(rows, resolve_link=resolver)
+    assert errors == [] and (t.lat, t.lon, t.maps_url) == (52.4176, 16.8089, "https://maps.app.goo.gl/abc")
+    row = track_row(t)
+    assert row["Mapy Google"] == "https://maps.app.goo.gl/abc" and row["Współrzędne (szer., dł.)"] == "52.41760, 16.80890"
+
+    # zapisany link + poprawione ręcznie współrzędne -> bez ponownego otwierania linku
+    row["Współrzędne (szer., dł.)"] = "52.5, 16.9"
+    (t2,), _ = tracks_from_rows([row], known_links={t.maps_url: (t.lat, t.lon)}, resolve_link=resolver)
+    assert (t2.lat, t2.lon) == (52.5, 16.9) and len(calls) == 1
+
+    _, errors = tracks_from_rows([{"Nazwa": "X"}])
+    assert "współrzędne albo wklej link" in errors[0]

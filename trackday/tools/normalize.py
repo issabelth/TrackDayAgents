@@ -144,8 +144,17 @@ def parse_coords(text: str) -> tuple[float, float]:
     return lat, lon
 
 
-TRACK_COLUMNS = ["Nazwa", "Kraj", "Współrzędne (szer., dł.)", "Inne nazwy (po przecinku)"]
+COL_NAME, COL_COUNTRY, COL_LINK, COL_COORDS, COL_ALIASES = (
+    "Nazwa", "Kraj", "Link do Map Google", "Współrzędne (szer., dł.)", "Inne nazwy (po przecinku)")
+TRACK_COLUMNS = [COL_NAME, COL_COUNTRY, COL_LINK, COL_COORDS, COL_ALIASES]
 GMAPS_COLUMN = "Mapy Google"
+
+
+def track_row(t: TrackDef) -> dict:
+    """Tor -> wiersz tabeli w zakładce „Tory” (z linkiem „otwórz” do Map Google)."""
+    return {COL_NAME: t.name, COL_COUNTRY: t.country or "", COL_LINK: t.maps_url or "",
+            COL_COORDS: f"{t.lat:.5f}, {t.lon:.5f}", COL_ALIASES: ", ".join(t.aliases),
+            GMAPS_COLUMN: t.maps_url or google_maps_url(t.lat, t.lon)}
 
 
 def google_maps_url(lat: float | None = None, lon: float | None = None, query: str | None = None) -> str:
@@ -160,14 +169,24 @@ def _cell(v) -> str:
     return str(v).strip()
 
 
-def tracks_from_rows(rows: list[dict]) -> tuple[list[TrackDef], list[str]]:
-    """Wiersze tabeli z zakładki „Tory” -> (lista torów, błędy). Puste wiersze są pomijane."""
+def tracks_from_rows(rows: list[dict], known_links: dict[str, tuple[float, float]] | None = None,
+                     resolve_link=None) -> tuple[list[TrackDef], list[str]]:
+    """Wiersze tabeli z zakładki „Tory” -> (lista torów, błędy). Puste wiersze są pomijane.
+
+    Tor podaje się współrzędnymi albo linkiem do obiektu w Mapach Google. Nowy (zmieniony) link ma
+    pierwszeństwo - współrzędne są z niego odczytywane; dla linku już zapisanego (``known_links``)
+    obowiązują współrzędne z tabeli, więc można je poprawić ręcznie bez ponownego otwierania linku.
+    """
+    from trackday.tools.maps_link import resolve_maps_link
+
+    resolve_link = resolve_link or resolve_maps_link
+    known_links = known_links or {}
     tracks: list[TrackDef] = []
     errors: list[str] = []
     names: set[str] = set()
     for i, row in enumerate(rows, start=1):
-        name, coords = _cell(row.get(TRACK_COLUMNS[0])), _cell(row.get(TRACK_COLUMNS[2]))
-        if not name and not coords:
+        name, coords, link = (_cell(row.get(c)) for c in (COL_NAME, COL_COORDS, COL_LINK))
+        if not name and not coords and not link:
             continue
         if not name:
             errors.append(f"Wiersz {i}: brak nazwy toru.")
@@ -177,10 +196,15 @@ def tracks_from_rows(rows: list[dict]) -> tuple[list[TrackDef], list[str]]:
             continue
         names.add(_fold(name))
         try:
-            lat, lon = parse_coords(coords)
-            aliases = [a.strip() for a in _cell(row.get(TRACK_COLUMNS[3])).split(",") if a.strip()]
-            tracks.append(TrackDef(name=name, country=_cell(row.get(TRACK_COLUMNS[1])) or None,
-                                   lat=lat, lon=lon, aliases=aliases))
+            if link and (link not in known_links or not coords):
+                lat, lon = resolve_link(link)
+            elif coords:
+                lat, lon = parse_coords(coords)
+            else:
+                raise ValueError("wpisz współrzędne albo wklej link do toru z Map Google")
+            aliases = [a.strip() for a in _cell(row.get(COL_ALIASES)).split(",") if a.strip()]
+            tracks.append(TrackDef(name=name, country=_cell(row.get(COL_COUNTRY)) or None,
+                                   lat=lat, lon=lon, aliases=aliases, maps_url=link or None))
         except ValueError as err:  # także błędy walidacji Pydantic
             errors.append(f"Wiersz {i} ({name}): {str(err).splitlines()[0]}")
     return tracks, errors

@@ -18,8 +18,9 @@ from trackday.evaluation import golden_as_events
 from trackday.llm import create_llm, is_local, list_ollama_models
 from trackday.models import ExtractionResult, ScoutReport, TrackDayEvent
 from trackday.sources import SourceError, load_sources, make_source
-from trackday.tools.normalize import (GMAPS_COLUMN, TRACK_COLUMNS, build_tracks, default_track_defs, google_maps_url,
-                                      match_track, tracks_from_rows)
+from trackday.tools.normalize import (COL_ALIASES, COL_COORDS, COL_COUNTRY, COL_LINK, COL_NAME, GMAPS_COLUMN,
+                                      TRACK_COLUMNS, build_tracks, default_track_defs, google_maps_url, match_track,
+                                      track_row, tracks_from_rows)
 from trackday.views import all_groups, group_by_day
 from trackday.storage.db import EventRepository
 
@@ -220,8 +221,10 @@ with tab_sources:
 with tab_tracks:
     st.subheader("Znane tory")
     st.caption("Agent dopasowuje nazwę toru z ogłoszenia do tej listy (także po *innych nazwach*) i bierze stąd "
-               "współrzędne do mapy. Dodaj wiersz (+ pod tabelą), wpisz nazwę i współrzędne - najprościej kliknąć "
-               "prawym przyciskiem tor w Mapach Google i skopiować liczby, np. `52.4176, 16.8089`. "
+               "współrzędne do mapy. Dodaj wiersz (+ pod tabelą), wpisz nazwę i **wklej link do toru z Map Google** "
+               "(przycisk „Udostępnij” → „Kopiuj link” albo adres z paska przeglądarki) - współrzędne zostaną "
+               "odczytane z linku. Można też wpisać współrzędne ręcznie: kliknij tor prawym przyciskiem w Mapach "
+               "Google i skopiuj liczby, np. `52.4176, 16.8089`. "
                "Po zapisaniu zebrane już terminy są dopasowywane ponownie.")
     saved_tracks = repo.list_tracks()
     known = build_tracks(saved_tracks)
@@ -231,9 +234,7 @@ with tab_tracks:
                 + ", ".join(f"**{m}** ([szukaj w Mapach Google ↗]({google_maps_url(query=m)}))" for m in missing)
                 + ". Dodaj je poniżej.", icon=":material/location_off:")
     tracks_df = pd.DataFrame(
-        [dict(zip(TRACK_COLUMNS + [GMAPS_COLUMN], (t.name, t.country or "", f"{t.lat:.5f}, {t.lon:.5f}",
-                                                    ", ".join(t.aliases), google_maps_url(t.lat, t.lon))))
-         for t in saved_tracks],
+        [track_row(t) for t in saved_tracks],
         columns=TRACK_COLUMNS + [GMAPS_COLUMN],
     ).astype(str)
     edited_tracks = st.data_editor(
@@ -241,11 +242,15 @@ with tab_tracks:
         key=f"tracks_editor_{st.session_state.get('tracks_version', 0)}",
         num_rows="dynamic", hide_index=True,
         column_config={
-            "Nazwa": st.column_config.TextColumn(required=True, help="Nazwa wyświetlana w terminach i na mapie"),
-            "Kraj": st.column_config.TextColumn(width="small", help="Kod kraju, np. PL, CZ (opcjonalnie)"),
-            "Współrzędne (szer., dł.)": st.column_config.TextColumn(
-                required=True, help="Szerokość i długość geograficzna, np. 52.4176, 16.8089 (format z Map Google)"),
-            "Inne nazwy (po przecinku)": st.column_config.TextColumn(
+            COL_NAME: st.column_config.TextColumn(required=True, help="Nazwa wyświetlana w terminach i na mapie"),
+            COL_COUNTRY: st.column_config.TextColumn(width="small", help="Kod kraju, np. PL, CZ (opcjonalnie)"),
+            COL_LINK: st.column_config.TextColumn(
+                help="Link do toru w Mapach Google, np. https://maps.app.goo.gl/… - współrzędne zostaną odczytane "
+                     "z linku przy zapisie (wtedy kolumnę współrzędnych można zostawić pustą)"),
+            COL_COORDS: st.column_config.TextColumn(
+                help="Szerokość i długość geograficzna, np. 52.4176, 16.8089 (format z Map Google). "
+                     "Puste, jeśli podano link - wypełnią się po zapisaniu"),
+            COL_ALIASES: st.column_config.TextColumn(
                 width="large", help="Nazwy używane przez organizatorów, np. „Poznań, Tor Poznań, Przeźmierowo”"),
             GMAPS_COLUMN: st.column_config.LinkColumn(
                 display_text="otwórz ↗", disabled=True,
@@ -254,7 +259,10 @@ with tab_tracks:
         alt="Lista znanych torów z współrzędnymi",
     )
     if st.button("Zapisz tory", type="primary", icon=":material/save:"):
-        new_tracks, t_errors = tracks_from_rows(edited_tracks.to_dict("records"))
+        with st.spinner("Odczytuję współrzędne z linków…"):
+            new_tracks, t_errors = tracks_from_rows(
+                edited_tracks.to_dict("records"),
+                known_links={t.maps_url: (t.lat, t.lon) for t in saved_tracks if t.maps_url})
         if t_errors:
             for err in t_errors:
                 st.error(err)

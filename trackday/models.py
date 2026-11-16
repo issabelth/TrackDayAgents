@@ -98,6 +98,8 @@ class TrackDef(BaseModel):
     lat: float = Field(ge=-90, le=90)
     lon: float = Field(ge=-180, le=180)
     aliases: list[str] = Field(default_factory=list, description="Inne nazwy toru używane na stronach organizatorów")
+    maps_url: str | None = Field(default=None, max_length=2000,
+                                 description="Link do obiektu w Mapach Google (źródło współrzędnych)")
 
 
 # ---------------------------------------------------------------------------
