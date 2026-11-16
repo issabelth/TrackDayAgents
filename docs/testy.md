@@ -9,7 +9,7 @@ Testy są podzielone na dwie warstwy:
 
 ## 1. Testy automatyczne – wyniki
 
-Uruchomienie z 16.11.2026 (Python 3.15.2, Windows 11): **70 passed**.
+Uruchomienie z 16.11.2026 (Python 3.15.2, Windows 11): **71 passed**.
 
 | Plik | Przykładowe przypadki |
 |---|---|
@@ -17,7 +17,7 @@ Uruchomienie z 16.11.2026 (Python 3.15.2, Windows 11): **70 passed**.
 | `tests/test_agent.py` | cały przepływ z „idealnym” modelem daje 100% zgodności z zestawem wzorcowym i usuwa 1 duplikat; ukryta treść nie trafia do modelu, a dokument jest w `<dokument_niezaufany>`; zła data → wpis odrzucony; link do obcej domeny (`evil.example`) → zastąpiony stroną organizatora; ujemna cena/miejsca → usunięte; brak waluty → PLN z uwagą; niska pewność → uwaga; błąd API nie przerywa działania; niedostępne źródło nie blokuje pozostałych |
 | `tests/test_detail_pages.py` | tryb „lista → podstrony”: tylko widoczne linki z tej samej domeny pasujące do wzorca (link ukryty i do obcej domeny pominięte), limit podstron, niedziałająca podstrona nie przerywa pracy, brak dopasowań → analiza samej listy, zwykły fragment adresu i niepoprawne wyrażenie jako wzorzec, dwie sesje jednego dnia = dwa terminy, link „udostępnij” zastąpiony adresem podstrony |
 | `tests/test_variants.py` | odczyt wszystkich wariantów (sesja × grupa) z liczbą miejsc i „Brak w magazynie” → 0; sklep wczytujący warianty JavaScriptem → ostrzeżenie; godzina z „godz. 13.30” (data „21.11.26” nie jest godziną); agent: suma miejsc, grupy i cena z wariantów, godzina i REVERS z nazwy; widok: jeden wpis na dzień, wybory posortowane po godzinie, filtr grup i „tylko z wolnymi miejscami” |
-| `tests/test_tracks.py` | współrzędne w formatach „52.4176, 16.8089” / „52,4176; 16,8089” i błędne (zakres, tekst); dopasowanie toru po nazwie i innych nazwach z listy użytkownika; zapis listy w bazie (tory domyślne tylko raz); ponowne dopasowanie zebranych terminów po dodaniu i usunięciu toru; agent używa torów z bazy; zamiana wierszy tabeli na tory (puste komórki, duplikaty, błędy) |
+| `tests/test_tracks.py` | współrzędne w formatach „52.4176, 16.8089” / „52,4176; 16,8089” i błędne (zakres, tekst); dopasowanie toru po nazwie i innych nazwach z listy użytkownika; zapis listy w bazie (tory domyślne tylko raz); ponowne dopasowanie zebranych terminów po dodaniu i usunięciu toru; agent używa torów z bazy; zamiana wierszy tabeli na tory (puste komórki, duplikaty, błędy); link do Map Google (współrzędne / nazwa) |
 | `tests/test_storage.py` | udany przebieg źródła zastępuje jego stare terminy (nieudany – nie); filtry SQL (data, koszt, tor, wolne miejsca); aktualizacja wydarzenia; zestaw wzorcowy vs on sam = 100% |
 
 ## 2. Zestaw wzorcowy (dane testowe)

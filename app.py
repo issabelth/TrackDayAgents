@@ -18,7 +18,8 @@ from trackday.evaluation import golden_as_events
 from trackday.llm import create_llm, is_local, list_ollama_models
 from trackday.models import ExtractionResult, ScoutReport, TrackDayEvent
 from trackday.sources import SourceError, load_sources, make_source
-from trackday.tools.normalize import TRACK_COLUMNS, build_tracks, default_track_defs, match_track, tracks_from_rows
+from trackday.tools.normalize import (GMAPS_COLUMN, TRACK_COLUMNS, build_tracks, default_track_defs, google_maps_url,
+                                      match_track, tracks_from_rows)
 from trackday.views import all_groups, group_by_day
 from trackday.storage.db import EventRepository
 
@@ -226,12 +227,14 @@ with tab_tracks:
     known = build_tracks(saved_tracks)
     missing = sorted({e.track for e in repo.list_events() if match_track(e.track, known) is None})
     if missing:
-        st.info("Tory z zebranych terminów, których nie ma na liście (brak na mapie): **"
-                + "**, **".join(missing) + "**. Dodaj je poniżej.", icon=":material/location_off:")
+        st.info("Tory z zebranych terminów, których nie ma na liście (brak na mapie): "
+                + ", ".join(f"**{m}** ([szukaj w Mapach Google ↗]({google_maps_url(query=m)}))" for m in missing)
+                + ". Dodaj je poniżej.", icon=":material/location_off:")
     tracks_df = pd.DataFrame(
-        [dict(zip(TRACK_COLUMNS, (t.name, t.country or "", f"{t.lat:.5f}, {t.lon:.5f}", ", ".join(t.aliases))))
+        [dict(zip(TRACK_COLUMNS + [GMAPS_COLUMN], (t.name, t.country or "", f"{t.lat:.5f}, {t.lon:.5f}",
+                                                    ", ".join(t.aliases), google_maps_url(t.lat, t.lon))))
          for t in saved_tracks],
-        columns=TRACK_COLUMNS,
+        columns=TRACK_COLUMNS + [GMAPS_COLUMN],
     ).astype(str)
     edited_tracks = st.data_editor(
         tracks_df,
@@ -244,6 +247,9 @@ with tab_tracks:
                 required=True, help="Szerokość i długość geograficzna, np. 52.4176, 16.8089 (format z Map Google)"),
             "Inne nazwy (po przecinku)": st.column_config.TextColumn(
                 width="large", help="Nazwy używane przez organizatorów, np. „Poznań, Tor Poznań, Przeźmierowo”"),
+            GMAPS_COLUMN: st.column_config.LinkColumn(
+                display_text="otwórz ↗", disabled=True,
+                help="Otwiera tor w Mapach Google (nowe tory - po zapisaniu)"),
         },
         alt="Lista znanych torów z współrzędnymi",
     )

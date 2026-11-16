@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from urllib.parse import quote_plus
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
@@ -144,6 +145,13 @@ def parse_coords(text: str) -> tuple[float, float]:
 
 
 TRACK_COLUMNS = ["Nazwa", "Kraj", "Współrzędne (szer., dł.)", "Inne nazwy (po przecinku)"]
+GMAPS_COLUMN = "Mapy Google"
+
+
+def google_maps_url(lat: float | None = None, lon: float | None = None, query: str | None = None) -> str:
+    """Link do Map Google: punkt o podanych współrzędnych albo wyszukiwanie po nazwie."""
+    q = f"{lat:.5f},{lon:.5f}" if lat is not None and lon is not None else (query or "").strip()
+    return "https://www.google.com/maps/search/?api=1&query=" + quote_plus(q)
 
 
 def _cell(v) -> str:

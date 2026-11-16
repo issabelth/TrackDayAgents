@@ -106,3 +106,11 @@ def test_tracks_from_table_rows():
            {"Nazwa": "Tor Poznan", "Współrzędne (szer., dł.)": "1, 2"}, {"Nazwa": "tor poznań", "Współrzędne (szer., dł.)": "1, 2"}]
     tracks, errors = tracks_from_rows(bad)
     assert len(errors) == 3 and "Wiersz 1 (A)" in errors[0] and "brak nazwy" in errors[1] and "już na liście" in errors[2]
+
+
+def test_google_maps_url():
+    from trackday.tools.normalize import google_maps_url
+
+    assert google_maps_url(52.4176, 16.8089) == "https://www.google.com/maps/search/?api=1&query=52.41760%2C16.80890"
+    assert google_maps_url(query="Gazuu Racing Park") == \
+        "https://www.google.com/maps/search/?api=1&query=Gazuu+Racing+Park"

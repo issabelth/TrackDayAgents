@@ -158,8 +158,9 @@ Treść stron jest niezaufana (pośredni prompt injection), dlatego:
   Pod listą: karta szczegółów wydarzenia (`st.metric`) i eksport JSON.
 - **Mapa:** tory z wynikami (`st.map`).
 - **Tory:** lista znanych torów edytowana w tabeli: nazwa, kraj, **współrzędne** (format z Map Google, np.
-  `52.4176, 16.8089`; działa też `52,4176; 16,8089`) i inne nazwy używane przez organizatorów. Zakładka podpowiada
-  tory z zebranych terminów, których brakuje na liście. Po zapisaniu zebrane terminy są dopasowywane ponownie
+  `52.4176, 16.8089`; działa też `52,4176; 16,8089`) i inne nazwy używane przez organizatorów. Każdy tor ma link **otwórz ↗** do
+  Map Google. Zakładka podpowiada tory z zebranych terminów, których brakuje na liście, z linkiem do wyszukania ich
+  w Mapach Google. Po zapisaniu zebrane terminy są dopasowywane ponownie
   (nazwa toru i współrzędne – od razu widać je na mapie). Przy pierwszym uruchomieniu lista jest wypełniana z
   `data/tracks.json`.
 - **Raport agenta:** wynik per źródło, ostrzeżenia (w tym wykryty prompt injection), ślad kroków i zużycie tokenów.
@@ -206,7 +207,7 @@ Szczegóły: [docs/testy.md](docs/testy.md).
 ```bash
 .venv\Scripts\python.exe -m pytest
 ```
-Wynik: **70 testów – wszystkie zaliczone.**
+Wynik: **71 testów – wszystkie zaliczone.**
 
 **Testy z prawdziwym modelem** – zestaw wzorcowy 20 wydarzeń (3 strony organizatorów, różne formaty: tabela,
 karty, tekst blogowy) + 11 przypadków szczególnych (brak roku, przedział cen, „ostatnie miejsca”, nieprecyzyjna
