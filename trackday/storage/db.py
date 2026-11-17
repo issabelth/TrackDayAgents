@@ -6,7 +6,7 @@ import hashlib
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
@@ -245,11 +245,12 @@ class EventRepository:
                     min_price_pln: float | None = None, weekdays: list[int] | None = None,
                     hide_missing: bool = False) -> list[TrackDayEvent]:
         """``weekdays`` - dni tygodnia jak w ``date.weekday()`` (0 = poniedziałek … 6 = niedziela).
+        Wydarzenie kilkudniowe pasuje do zakresu dat i dni tygodnia, jeśli pasuje którykolwiek jego dzień.
         Filtry ceny nie odrzucają terminów bez ceny (lepiej je pokazać niż przeoczyć)."""
         sql = "SELECT data, first_seen, last_seen, missing_since FROM events WHERE 1=1"
         args: list = []
         if date_from:
-            sql += " AND date_start >= ?"
+            sql += " AND COALESCE(date_end, date_start) >= ?"
             args.append(date_from.isoformat())
         if date_to:
             sql += " AND date_start <= ?"
@@ -266,10 +267,6 @@ class EventRepository:
         if min_price_pln is not None:
             sql += " AND (price_pln IS NULL OR price_pln >= ?)"
             args.append(min_price_pln)
-        if weekdays:
-            # SQLite: %w = 0 niedziela … 6 sobota
-            sql += f" AND CAST(strftime('%w', date_start) AS INTEGER) IN ({','.join('?' * len(weekdays))})"
-            args.extend((d + 1) % 7 for d in weekdays)
         if only_available:
             sql += " AND (seats_left IS NULL OR seats_left > 0)"
         if hide_missing:
@@ -279,6 +276,8 @@ class EventRepository:
         with self._conn() as c:
             for data, first, last, missing in c.execute(sql, args):
                 ev = TrackDayEvent.model_validate_json(data)
+                if weekdays and not _on_weekdays(ev, set(weekdays)):
+                    continue
                 out.append(ev.model_copy(update={
                     "first_seen": datetime.fromisoformat(first), "last_seen": datetime.fromisoformat(last),
                     "missing_since": datetime.fromisoformat(missing) if missing else None}))
@@ -299,3 +298,10 @@ class EventRepository:
         with self._conn() as c:
             return list(c.execute("SELECT checked_at, seats_left FROM seat_history WHERE event_id=? "
                                   "ORDER BY checked_at", (event_id,)))
+
+
+def _on_weekdays(ev: TrackDayEvent, weekdays: set[int]) -> bool:
+    """Czy któryś dzień wydarzenia (od date_start do date_end) wypada w jednym z ``weekdays``."""
+    last = ev.date_end if ev.date_end and ev.date_end > ev.date_start else ev.date_start
+    n = min((last - ev.date_start).days, 6) + 1  # tydzień wystarczy, by trafić każdy dzień tygodnia
+    return any((ev.date_start + timedelta(days=i)).weekday() in weekdays for i in range(n))

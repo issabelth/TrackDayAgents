@@ -20,6 +20,28 @@ class DayGroup:
     organizers: list[str]
     events: list[TrackDayEvent]
     rows: list[dict] = field(default_factory=list)
+    end: date | None = None  # ostatni dzień wydarzenia kilkudniowego (None = jednodniowe)
+
+    @property
+    def last_day(self) -> date:
+        return self.end or self.day
+
+    @property
+    def n_days(self) -> int:
+        return (self.last_day - self.day).days + 1
+
+    @property
+    def dates(self) -> list[date]:
+        """Wszystkie dni, które zajmuje wydarzenie."""
+        return [self.day + timedelta(days=i) for i in range(self.n_days)]
+
+    def date_label(self) -> str:
+        """Np. „sob 21.11.2026” albo „pt 01.05 - nd 03.05.2026 (3 dni)”."""
+        a, b = self.day, self.last_day
+        if a == b:
+            return f"{WEEKDAYS[a.weekday()]} {a:%d.%m.%Y}"
+        first = f"{a:%d.%m}" if a.year == b.year else f"{a:%d.%m.%Y}"
+        return f"{WEEKDAYS[a.weekday()]} {first} - {WEEKDAYS[b.weekday()]} {b:%d.%m.%Y} ({self.n_days} dni)"
 
     @property
     def seats_left(self) -> int | None:
@@ -33,7 +55,7 @@ class DayGroup:
 
     def label(self) -> str:
         n_ev, n_rows = len(self.events), len(self.rows)
-        parts = [f"**{WEEKDAYS[self.day.weekday()]} {self.day:%d.%m.%Y}**", self.track, ", ".join(self.organizers),
+        parts = [f"**{self.date_label()}**", self.track, ", ".join(self.organizers),
                  f"{n_ev} {'wydarzenie' if n_ev == 1 else 'wydarzenia' if n_ev < 5 else 'wydarzeń'}"
                  + (f", {n_rows} wyborów" if n_rows != n_ev else "")]
         if self.min_price is not None:
@@ -104,13 +126,15 @@ def choice_rows(e: TrackDayEvent, groups: set[str] | None = None, only_available
 
 def group_by_day(events: list[TrackDayEvent], groups: set[str] | None = None,
                  only_available: bool = False) -> list[DayGroup]:
-    """Jeden wpis na dzień i tor; wydarzenia bez pasujących wyborów (filtr grup / wolnych miejsc) są pomijane."""
-    days: dict[tuple[date, str], DayGroup] = {}
+    """Jeden wpis na termin (pierwszy dzień, ostatni dzień, tor); wydarzenia kilkudniowe zajmują kilka dni.
+    Wydarzenia bez pasujących wyborów (filtr grup / wolnych miejsc) są pomijane."""
+    days: dict[tuple[date, date | None, str], DayGroup] = {}
     for e in sorted(events, key=lambda e: (e.date_start, e.track, e.start_time or "", e.name)):
         rows = choice_rows(e, groups, only_available)
         if not rows:
             continue
-        d = days.setdefault((e.date_start, e.track), DayGroup(e.date_start, e.track, [], []))
+        end = e.date_end if e.date_end and e.date_end > e.date_start else None
+        d = days.setdefault((e.date_start, end, e.track), DayGroup(e.date_start, e.track, [], [], end=end))
         d.events.append(e)
         d.rows.extend(rows)
         if e.organizer not in d.organizers:
@@ -129,8 +153,9 @@ TRACK_COLORS = ["blue", "orange", "green", "violet", "red", "yellow", "gray"]
 
 
 def day_key(d: DayGroup) -> str:
-    """Stabilny identyfikator wpisu (dzień × tor) - do kluczy widżetów."""
-    return f"{d.day:%Y%m%d}_{hashlib.sha1(d.track.encode()).hexdigest()[:8]}"
+    """Stabilny identyfikator wpisu (dni × tor) - do kluczy widżetów."""
+    span = f"{d.day:%Y%m%d}" + (f"-{d.end:%Y%m%d}" if d.end else "")
+    return f"{span}_{hashlib.sha1(d.track.encode()).hexdigest()[:8]}"
 
 
 def shift_month(day: date, months: int) -> date:
@@ -166,18 +191,31 @@ def track_colors(days: list[DayGroup]) -> dict[str, str]:
 
 
 def by_date(days: list[DayGroup]) -> dict[date, list[DayGroup]]:
+    """Wpisy na każdy dzień - wydarzenie kilkudniowe trafia do każdego swojego dnia.
+    Kolejność w komórce jak w Kalendarzu Google: najpierw kilkudniowe (dłuższe wyżej), potem wg godziny."""
     out: dict[date, list[DayGroup]] = {}
     for d in days:
-        out.setdefault(d.day, []).append(d)
+        for day in d.dates:
+            out.setdefault(day, []).append(d)
     for lst in out.values():
-        lst.sort(key=lambda d: (min((e.start_time or "99") for e in d.events), d.track))
+        lst.sort(key=lambda d: (d.day, -d.n_days, min((e.start_time or "99") for e in d.events), d.track))
     return out
 
 
-def chip_label(d: DayGroup, color: str) -> str:
-    """Krótki opis wpisu w komórce kalendarza: godzina + tor (+ liczba wydarzeń)."""
+def chip_label(d: DayGroup, color: str, day: date | None = None) -> str:
+    """Krótki opis wpisu w komórce kalendarza `day`: godzina + tor (+ liczba wydarzeń, dzień k/n)."""
+    day = day or d.day
+    if day != d.day:  # kolejny dzień wydarzenia kilkudniowego
+        return f":{color}[▬] {d.track} · dzień {(day - d.day).days + 1}/{d.n_days}"
     times = sorted(e.start_time for e in d.events if e.start_time)
     label = f":{color}[●] " + (f"{times[0]} " if times else "") + d.track
     if len(d.events) > 1:
         label += f" ({len(d.events)})"
+    if d.n_days > 1:
+        label += f" · {d.n_days} dni"
     return label
+
+
+def overlaps(d: DayGroup, first: date, last: date) -> bool:
+    """Czy wpis zajmuje choć jeden dzień z przedziału [first, last]."""
+    return d.day <= last and d.last_day >= first

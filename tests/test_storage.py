@@ -113,3 +113,13 @@ def test_old_database_gets_new_column(tmp_path):
     repo = EventRepository(db)
     repo.save_run(run([ev("a")]))
     assert repo.list_events(hide_missing=True)[0].id == "a"
+
+
+def test_multi_day_event_matches_filters_by_any_of_its_days():
+    repo = EventRepository(":memory:")
+    # pt 30.04 - nd 02.05.2027: zaczyna się w piątek i w kwietniu
+    repo.save_run(run([ev("weekend", day=date(2027, 4, 30), date_end=date(2027, 5, 2)),
+                       ev("friday", day=date(2027, 4, 23))]))
+    assert [e.id for e in repo.list_events(weekdays=[5, 6])] == ["weekend"]
+    assert [e.id for e in repo.list_events(date_from=date(2027, 5, 1))] == ["weekend"]
+    assert [e.id for e in repo.list_events(date_to=date(2027, 4, 29))] == ["friday"]

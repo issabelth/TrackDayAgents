@@ -23,7 +23,7 @@ from trackday.tools.normalize import (COL_ALIASES, COL_COORDS, COL_COUNTRY, COL_
                                       TRACK_COLUMNS, build_tracks, default_track_defs, google_maps_url, match_track,
                                       event_id, track_row, tracks_from_rows)
 from trackday.views import (MONTHS, WEEKDAYS, DayGroup, all_groups, by_date, chip_label, day_key, group_by_day,
-                            month_weeks, period_title, shift_month, track_colors, week_of)
+                            month_weeks, overlaps, period_title, shift_month, track_colors, week_of)
 from trackday.storage.db import EventRepository
 
 st.set_page_config(page_title="TrackDay Agents", page_icon="🏍️", layout="wide")
@@ -259,11 +259,12 @@ with tab_sources:
             if not row.get("Zapisz"):
                 continue
             day = pd.Timestamp(row["Data"]).date() if pd.notna(row.get("Data")) else ev.date_start
+            end = pd.Timestamp(row["Do dnia"]).date() if pd.notna(row.get("Do dnia")) else None
             hour = parse_time(str(row.get("Godzina") or "")) or None
             layout = (str(row.get("Odmiana") or "").strip()[:60]) or None
             name = str(row.get("Nazwa") or "").strip() or ev.name
             keep.append(ev.model_copy(update={
-                "date_start": day, "date_end": ev.date_end if ev.date_end and ev.date_end > day else None,
+                "date_start": day, "date_end": end if end and end > day else None,
                 "start_time": hour, "track_layout": layout, "name": name,
                 "id": event_id(ev.organizer, ev.track, day, extra=f"manual {hour or ''} {layout or ''}".strip())}))
         res = repo.upsert_events(keep)
@@ -337,7 +338,7 @@ with tab_sources:
                     st.markdown(f"Odczytane terminy: **{len(rep.events)}** - popraw daty lub godziny, jeśli trzeba, "
                                 "odznacz błędne i zapisz.")
                     preview = pd.DataFrame([{
-                        "Zapisz": True, "Data": e.date_start, "Godzina": e.start_time or "",
+                        "Zapisz": True, "Data": e.date_start, "Do dnia": e.date_end, "Godzina": e.start_time or "",
                         "Odmiana": e.track_layout or "", "Nazwa": e.name, "Tor": e.track,
                         "Uwagi": "; ".join(i for i in e.issues if i != "dodane ręcznie przez użytkownika"),
                     } for e in rep.events])
@@ -347,6 +348,9 @@ with tab_sources:
                         column_config={
                             "Zapisz": st.column_config.CheckboxColumn(width="small"),
                             "Data": st.column_config.DateColumn(format="DD.MM.YYYY", required=True),
+                            "Do dnia": st.column_config.DateColumn(
+                                format="DD.MM.YYYY", help="Ostatni dzień wydarzenia kilkudniowego (puste = "
+                                                          "jednodniowe)"),
                             "Godzina": st.column_config.TextColumn(width="small", help="np. 13:30 (opcjonalnie)"),
                             "Odmiana": st.column_config.TextColumn(width="small", help="np. REVERS"),
                         },
@@ -417,7 +421,7 @@ with tab_tracks:
 
 with tab_events:
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Dni z terminami", len({d.day for d in days}))
+    c1.metric("Dni z terminami", len({day for d in days for day in d.dates}))
     c2.metric("Wybory (sesja × grupa)", sum(len(d.rows) for d in days))
     c3.metric("Organizatorzy", len({e.organizer for e in events}))
     low = [r for d in days for r in d.rows if isinstance(r["Wolne miejsca"], int) and 0 < r["Wolne miejsca"] < 3]
@@ -470,21 +474,21 @@ with tab_events:
         @st.dialog("Szczegóły terminu", width="large")
         def day_dialog(d: DayGroup) -> None:
             st.markdown(f"### :{colors[d.track]}[●] {d.track}")
-            st.caption(f"{WEEKDAYS[d.day.weekday()]} {d.day:%d.%m.%Y} · {', '.join(d.organizers)}")
+            st.caption(f"{d.date_label()} · {', '.join(d.organizers)}")
             choices_table(d, compact=False)
             for e in d.events:
                 with st.container(border=True):
                     event_details(e)
 
-        def open_details(key: str) -> None:
-            st.session_state[f"cal_{key}"] = False  # zamknij kartę, zanim pokaże się okno
+        def open_details(key: str, card_key: str) -> None:
+            st.session_state[card_key] = False  # zamknij kartę, zanim pokaże się okno
             st.session_state["cal_dialog"] = key
 
-        def day_card(d: DayGroup) -> None:
+        def day_card(d: DayGroup, card_key: str) -> None:
             """Rozwinięty wpis (jak karta wydarzenia w Kalendarzu Google)."""
             with st.container(width=560):
                 st.markdown(f"**:{colors[d.track]}[●] {d.track}**")
-                st.caption(f"{WEEKDAYS[d.day.weekday()]} {d.day:%d.%m.%Y} · {', '.join(d.organizers)}")
+                st.caption(f"{d.date_label()} · {', '.join(d.organizers)}")
                 st.markdown("\n".join(f"- {e.start_time + ' · ' if e.start_time else ''}{e.name}" for e in d.events))
                 choices_table(d, compact=True)
                 links = {e.url: e.start_time for e in d.events}
@@ -492,12 +496,12 @@ with tab_events:
                     for url, time in links.items():
                         st.link_button(f"Zapisy {time}" if time and len(links) > 1 else "Zapisy", url,
                                        icon=":material/open_in_new:")
-                    st.button("Pełne szczegóły", key=f"more_{day_key(d)}", icon=":material/info:",
-                              on_click=open_details, args=(day_key(d),))
+                    st.button("Pełne szczegóły", key=f"more_{card_key}", icon=":material/info:",
+                              on_click=open_details, args=(day_key(d), card_key))
 
         # ---- pasek nawigacji (jak w Kalendarzu Google)
         if "cal_anchor" not in st.session_state:
-            upcoming = [d.day for d in days if d.day >= today]
+            upcoming = [max(d.day, today) for d in days if d.last_day >= today]
             st.session_state["cal_anchor"] = upcoming[0] if upcoming else days[0].day
 
         def move(step: int) -> None:
@@ -546,11 +550,12 @@ with tab_events:
                             num = f":gray[{num}]"
                         st.markdown(num)
                         for d in on_date.get(day, []):
-                            card = st.popover(chip_label(d, colors[d.track]), type="tertiary", width="stretch",
-                                              key=f"cal_{day_key(d)}", on_change="rerun")
+                            card_key = f"cal_{day_key(d)}_{day:%Y%m%d}"
+                            card = st.popover(chip_label(d, colors[d.track], day), type="tertiary",
+                                              width="stretch", key=card_key, on_change="rerun")
                             if card.open:  # treść karty liczona tylko po rozwinięciu
                                 with card:
-                                    day_card(d)
+                                    day_card(d, card_key)
             wanted = st.session_state.pop("cal_dialog", None)
             if wanted:
                 match = next((d for d in days if day_key(d) == wanted), None)
@@ -559,7 +564,7 @@ with tab_events:
 
             # podpowiedź, gdy w widocznym okresie nie ma nic
             first, last = weeks[0][0], weeks[-1][-1]
-            if not any(first <= d.day <= last for d in days):
+            if not any(overlaps(d, first, last) for d in days):
                 nxt = next((d.day for d in days if d.day > last), None)
                 prev = next((d.day for d in reversed(days) if d.day < first), None)
                 with st.container(horizontal=True, vertical_alignment="center"):
@@ -570,7 +575,7 @@ with tab_events:
                     if nxt:
                         st.button(f"Najbliższy: {nxt:%d.%m.%Y}", icon=":material/arrow_forward:", on_click=go_to,
                                   args=(nxt,), key="cal_go_next")
-            visible = {d.track for d in days if first <= d.day <= last}
+            visible = {d.track for d in days if overlaps(d, first, last)}
             if visible:
                 st.caption("Kliknij termin w kalendarzu, aby go rozwinąć. Kolor oznacza tor: "
                            + " · ".join(f":{c}[●] {t}" for t, c in colors.items() if t in visible))
