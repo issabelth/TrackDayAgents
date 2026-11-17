@@ -5,7 +5,6 @@ Uruchomienie:  streamlit run app.py
 
 from __future__ import annotations
 
-import hashlib
 from datetime import date, timedelta
 
 import pandas as pd
@@ -23,7 +22,8 @@ from trackday.tools.images import MAX_IMAGES, ImageError, prepare_image
 from trackday.tools.normalize import (COL_ALIASES, COL_COORDS, COL_COUNTRY, COL_LINK, COL_NAME, GMAPS_COLUMN,
                                       TRACK_COLUMNS, build_tracks, default_track_defs, google_maps_url, match_track,
                                       event_id, track_row, tracks_from_rows)
-from trackday.views import WEEKDAYS, all_groups, group_by_day
+from trackday.views import (MONTHS, WEEKDAYS, DayGroup, all_groups, by_date, chip_label, day_key, group_by_day,
+                            month_weeks, period_title, shift_month, track_colors, week_of)
 from trackday.storage.db import EventRepository
 
 st.set_page_config(page_title="TrackDay Agents", page_icon="🏍️", layout="wide")
@@ -417,7 +417,7 @@ with tab_tracks:
 
 with tab_events:
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Dni z terminami", len(days))
+    c1.metric("Dni z terminami", len({d.day for d in days}))
     c2.metric("Wybory (sesja × grupa)", sum(len(d.rows) for d in days))
     c3.metric("Organizatorzy", len({e.organizer for e in events}))
     low = [r for d in days for r in d.rows if isinstance(r["Wolne miejsca"], int) and 0 < r["Wolne miejsca"] < 3]
@@ -428,50 +428,160 @@ with tab_events:
     elif not events:
         st.info(f"Żaden z zapisanych terminów ({n_saved}) nie pasuje do filtrów - zmień je w panelu bocznym.")
     else:
+        colors = track_colors(days)
+        on_date = by_date(days)
+
+        def choices_table(d: DayGroup, compact: bool) -> None:
+            cols = (["Godzina", "Grupa", "Wolne miejsca", "Cena"] if compact else
+                    ["Godzina", "Wydarzenie", "Nitka / odmiana", "Grupa", "Wolne miejsca", "Cena", "Sesja",
+                     "Organizator", "Link", "Uwagi"])
+            st.dataframe(
+                pd.DataFrame(d.rows).astype({"Wolne miejsca": str}), width="stretch", hide_index=True,
+                column_order=cols,
+                column_config={
+                    "Link": st.column_config.LinkColumn("Link", display_text="otwórz ↗"),
+                    "Cena [zł]": None,
+                    "Organizator": None if len(d.organizers) == 1 else st.column_config.TextColumn(),
+                    "Wolne miejsca": st.column_config.TextColumn(),
+                },
+                alt=f"Wybory dnia {d.day:%d.%m.%Y} na torze {d.track}",
+            )
+
+        def event_details(e: TrackDayEvent) -> None:
+            st.markdown(f"**{e.name}**" + (f" · {e.start_time}" if e.start_time else "")
+                        + (f" · {e.track_layout}" if e.track_layout else "") + f" · {e.organizer}")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Cena", f"{e.price:g} {e.currency}" if e.price is not None else "brak")
+            m2.metric("Wolne miejsca", e.seats_left if e.seats_left is not None else (e.availability_note or "?"))
+            m3.metric("Pewność ekstrakcji", f"{e.confidence:.0%}")
+            m4.metric("Pogoda", "—", help="Agent 3 (Meteorolog) - kolejny etap")
+            st.link_button("Strona wydarzenia / zapisy", e.url, icon=":material/open_in_new:")
+            if e.first_seen and e.last_seen:
+                st.caption(f"W bazie od {e.first_seen:%d.%m.%Y %H:%M} · ostatnio potwierdzony na stronie "
+                           f"{e.last_seen:%d.%m.%Y %H:%M}")
+            if e.missing_since:
+                st.warning(f"Ostatnie wyszukiwanie ({e.missing_since:%d.%m.%Y}) nie znalazło już tego terminu na "
+                           "stronie organizatora - mógł zostać odwołany lub zdjęty.")
+            if e.price_note:
+                st.caption(f"Cena: {e.price_note}")
+            if e.issues:
+                st.warning("Uwagi walidacji: " + "; ".join(e.issues))
+
+        @st.dialog("Szczegóły terminu", width="large")
+        def day_dialog(d: DayGroup) -> None:
+            st.markdown(f"### :{colors[d.track]}[●] {d.track}")
+            st.caption(f"{WEEKDAYS[d.day.weekday()]} {d.day:%d.%m.%Y} · {', '.join(d.organizers)}")
+            choices_table(d, compact=False)
+            for e in d.events:
+                with st.container(border=True):
+                    event_details(e)
+
+        def open_details(key: str) -> None:
+            st.session_state[f"cal_{key}"] = False  # zamknij kartę, zanim pokaże się okno
+            st.session_state["cal_dialog"] = key
+
+        def day_card(d: DayGroup) -> None:
+            """Rozwinięty wpis (jak karta wydarzenia w Kalendarzu Google)."""
+            with st.container(width=560):
+                st.markdown(f"**:{colors[d.track]}[●] {d.track}**")
+                st.caption(f"{WEEKDAYS[d.day.weekday()]} {d.day:%d.%m.%Y} · {', '.join(d.organizers)}")
+                st.markdown("\n".join(f"- {e.start_time + ' · ' if e.start_time else ''}{e.name}" for e in d.events))
+                choices_table(d, compact=True)
+                links = {e.url: e.start_time for e in d.events}
+                with st.container(horizontal=True):
+                    for url, time in links.items():
+                        st.link_button(f"Zapisy {time}" if time and len(links) > 1 else "Zapisy", url,
+                                       icon=":material/open_in_new:")
+                    st.button("Pełne szczegóły", key=f"more_{day_key(d)}", icon=":material/info:",
+                              on_click=open_details, args=(day_key(d),))
+
+        # ---- pasek nawigacji (jak w Kalendarzu Google)
+        if "cal_anchor" not in st.session_state:
+            upcoming = [d.day for d in days if d.day >= today]
+            st.session_state["cal_anchor"] = upcoming[0] if upcoming else days[0].day
+
+        def move(step: int) -> None:
+            a = st.session_state["cal_anchor"]
+            st.session_state["cal_anchor"] = (a + timedelta(days=7 * step) if st.session_state.get("cal_view") == "week"
+                                              else shift_month(a, step))
+
+        def go_to(day: date) -> None:
+            st.session_state["cal_anchor"] = day
+
+        view_names = {"month": "Miesiąc", "week": "Tydzień", "list": "Harmonogram"}
+        with st.container(horizontal=True, vertical_alignment="center"):
+            view = st.session_state.get("cal_view", "month")
+            anchor: date = st.session_state["cal_anchor"]
+            if view != "list":
+                st.button("Dziś", on_click=go_to, args=(today,))
+                st.button("", icon=":material/chevron_left:", key="cal_prev", on_click=move, args=(-1,),
+                          help="Poprzedni okres", type="tertiary")
+                st.button("", icon=":material/chevron_right:", key="cal_next", on_click=move, args=(1,),
+                          help="Następny okres", type="tertiary")
+                st.markdown(f"#### {period_title(anchor, view)}")
+            st.space("stretch")
+            view = st.segmented_control("Widok", list(view_names), format_func=view_names.get, default="month",
+                                        required=True, key="cal_view", label_visibility="collapsed")
+
+        if view == "list":
+            st.caption("Jeden wiersz na dzień i tor - rozwiń, aby zobaczyć każdy wybór (wydarzenie, godzina, sesja, "
+                       "grupa) z liczbą wolnych miejsc.")
+            for d in days:
+                with st.expander(d.label(), key=f"day_{day_key(d)}"):
+                    choices_table(d, compact=False)
+        else:
+            weeks = month_weeks(anchor) if view == "month" else [week_of(anchor)]
+            header = st.columns(7, gap="xsmall")
+            for i, name in enumerate(WEEKDAYS):
+                header[i].markdown(f"**{name}**" if i < 5 else f":gray[**{name}**]", text_alignment="center")
+            for week in weeks:
+                cells = st.columns(7, gap="xsmall")
+                for cell, day in zip(cells, week):
+                    with cell.container(border=True, height="stretch" if view == "month" else 360, gap="xxsmall"):
+                        in_month = view == "week" or day.month == anchor.month
+                        num = f"{day.day}" if day.day != 1 else f"{day.day} {MONTHS[day.month - 1][:3]}"
+                        if day == today:
+                            num = f":primary-background[**{num}**]"
+                        elif not in_month:
+                            num = f":gray[{num}]"
+                        st.markdown(num)
+                        for d in on_date.get(day, []):
+                            card = st.popover(chip_label(d, colors[d.track]), type="tertiary", width="stretch",
+                                              key=f"cal_{day_key(d)}", on_change="rerun")
+                            if card.open:  # treść karty liczona tylko po rozwinięciu
+                                with card:
+                                    day_card(d)
+            wanted = st.session_state.pop("cal_dialog", None)
+            if wanted:
+                match = next((d for d in days if day_key(d) == wanted), None)
+                if match:
+                    day_dialog(match)
+
+            # podpowiedź, gdy w widocznym okresie nie ma nic
+            first, last = weeks[0][0], weeks[-1][-1]
+            if not any(first <= d.day <= last for d in days):
+                nxt = next((d.day for d in days if d.day > last), None)
+                prev = next((d.day for d in reversed(days) if d.day < first), None)
+                with st.container(horizontal=True, vertical_alignment="center"):
+                    st.caption("Brak terminów w tym okresie.")
+                    if prev:
+                        st.button(f"Poprzedni: {prev:%d.%m.%Y}", icon=":material/arrow_back:", on_click=go_to,
+                                  args=(prev,), key="cal_go_prev")
+                    if nxt:
+                        st.button(f"Najbliższy: {nxt:%d.%m.%Y}", icon=":material/arrow_forward:", on_click=go_to,
+                                  args=(nxt,), key="cal_go_next")
+            visible = {d.track for d in days if first <= d.day <= last}
+            if visible:
+                st.caption("Kliknij termin w kalendarzu, aby go rozwinąć. Kolor oznacza tor: "
+                           + " · ".join(f":{c}[●] {t}" for t, c in colors.items() if t in visible))
+
         st.caption(f"Pokazano terminy pasujące do filtrów spośród **{n_saved}** zapisanych w bazie. Każde "
                    "wyszukiwanie dopisuje nowe terminy i aktualizuje już zapisane (bez duplikatów u tego samego "
-                   "organizatora). Jeden wiersz na dzień i tor - rozwiń, aby zobaczyć każdy wybór (wydarzenie, "
-                   "godzina, sesja, grupa) z liczbą wolnych miejsc.")
-        for d in days:
-            with st.expander(d.label(), key=f"day_{d.day:%Y%m%d}_{hashlib.sha1(d.track.encode()).hexdigest()[:8]}"):
-                st.dataframe(
-                    pd.DataFrame(d.rows).astype({"Wolne miejsca": str}), width="stretch", hide_index=True,
-                    column_order=["Godzina", "Wydarzenie", "Nitka / odmiana", "Grupa", "Wolne miejsca", "Cena",
-                                  "Sesja", "Organizator", "Link", "Uwagi"],
-                    column_config={
-                        "Link": st.column_config.LinkColumn("Link", display_text="otwórz ↗"),
-                        "Cena [zł]": None,
-                        "Organizator": None if len(d.organizers) == 1 else st.column_config.TextColumn(),
-                        "Wolne miejsca": st.column_config.TextColumn(),
-                    },
-                    alt=f"Wybory dnia {d.day:%d.%m.%Y} na torze {d.track}",
-                )
+                   "organizatora).")
         st.download_button("⬇️ Pobierz JSON (kontrakt dla kolejnych agentów)",
                            data=ScoutReport(run_id="export", started_at=pd.Timestamp.now().to_pydatetime(),
                                             model="-", reference_date=date.today(), events=events).to_json_events(),
                            file_name="torowania.json", mime="application/json")
-
-        st.subheader("Szczegóły wydarzenia")
-        idx = st.selectbox("Wybierz termin", range(len(events)),
-                           format_func=lambda i: " · ".join(x for x in (str(events[i].date_start), events[i].start_time, events[i].track,
-                                                                  events[i].name, events[i].organizer) if x))
-        e = events[idx]
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Cena", f"{e.price:g} {e.currency}" if e.price is not None else "brak")
-        m2.metric("Wolne miejsca", e.seats_left if e.seats_left is not None else (e.availability_note or "?"))
-        m3.metric("Pewność ekstrakcji", f"{e.confidence:.0%}")
-        m4.metric("Pogoda", "—", help="Agent 3 (Meteorolog) - kolejny etap")
-        st.markdown(f"**{e.name}** · [{e.url}]({e.url})")
-        if e.first_seen and e.last_seen:
-            st.caption(f"W bazie od {e.first_seen:%d.%m.%Y %H:%M} · ostatnio potwierdzony na stronie "
-                       f"{e.last_seen:%d.%m.%Y %H:%M}")
-        if e.missing_since:
-            st.warning(f"Ostatnie wyszukiwanie ({e.missing_since:%d.%m.%Y}) nie znalazło już tego terminu na "
-                       "stronie organizatora - mógł zostać odwołany lub zdjęty.")
-        if e.price_note:
-            st.caption(f"Cena: {e.price_note}")
-        if e.issues:
-            st.warning("Uwagi walidacji: " + "; ".join(e.issues))
 
 with tab_map:
     pts = pd.DataFrame([{"lat": e.lat, "lon": e.lon, "tor": e.track} for e in events if e.lat is not None])

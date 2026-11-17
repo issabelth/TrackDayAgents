@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import calendar
+import hashlib
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 from trackday.models import TrackDayEvent
 
@@ -114,3 +116,68 @@ def group_by_day(events: list[TrackDayEvent], groups: set[str] | None = None,
         if e.organizer not in d.organizers:
             d.organizers.append(e.organizer)
     return list(days.values())
+
+
+# ---------------------------------------------------------------- kalendarz (widok jak w Kalendarzu Google)
+
+MONTHS = ["styczeń", "luty", "marzec", "kwiecień", "maj", "czerwiec", "lipiec", "sierpień", "wrzesień",
+          "październik", "listopad", "grudzień"]
+MONTHS_GEN = ["stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca", "sierpnia", "września",
+              "października", "listopada", "grudnia"]
+# Kolory dostępne w Markdownie Streamlit - każdy tor dostaje swój, jak osobne kalendarze w Google.
+TRACK_COLORS = ["blue", "orange", "green", "violet", "red", "yellow", "gray"]
+
+
+def day_key(d: DayGroup) -> str:
+    """Stabilny identyfikator wpisu (dzień × tor) - do kluczy widżetów."""
+    return f"{d.day:%Y%m%d}_{hashlib.sha1(d.track.encode()).hexdigest()[:8]}"
+
+
+def shift_month(day: date, months: int) -> date:
+    """Pierwszy dzień miesiąca przesuniętego o `months` względem miesiąca `day`."""
+    idx = day.year * 12 + day.month - 1 + months
+    return date(idx // 12, idx % 12 + 1, 1)
+
+
+def month_weeks(anchor: date) -> list[list[date]]:
+    """Tygodnie (pon-nd) siatki miesiąca zawierającego `anchor`, z dniami sąsiednich miesięcy na brzegach."""
+    return calendar.Calendar(firstweekday=0).monthdatescalendar(anchor.year, anchor.month)
+
+
+def week_of(anchor: date) -> list[date]:
+    """Dni tygodnia (pon-nd) zawierającego `anchor`."""
+    monday = anchor - timedelta(days=anchor.weekday())
+    return [monday + timedelta(days=i) for i in range(7)]
+
+
+def period_title(anchor: date, view: str) -> str:
+    if view == "week":
+        days = week_of(anchor)
+        a, b = days[0], days[-1]
+        if a.month == b.month:
+            return f"{a.day}-{b.day} {MONTHS_GEN[a.month - 1]} {a.year}"
+        return f"{a.day} {MONTHS[a.month - 1][:3]} - {b.day} {MONTHS[b.month - 1][:3]} {b.year}"
+    return f"{MONTHS[anchor.month - 1]} {anchor.year}"
+
+
+def track_colors(days: list[DayGroup]) -> dict[str, str]:
+    tracks = sorted({d.track for d in days})
+    return {t: TRACK_COLORS[i % len(TRACK_COLORS)] for i, t in enumerate(tracks)}
+
+
+def by_date(days: list[DayGroup]) -> dict[date, list[DayGroup]]:
+    out: dict[date, list[DayGroup]] = {}
+    for d in days:
+        out.setdefault(d.day, []).append(d)
+    for lst in out.values():
+        lst.sort(key=lambda d: (min((e.start_time or "99") for e in d.events), d.track))
+    return out
+
+
+def chip_label(d: DayGroup, color: str) -> str:
+    """Krótki opis wpisu w komórce kalendarza: godzina + tor (+ liczba wydarzeń)."""
+    times = sorted(e.start_time for e in d.events if e.start_time)
+    label = f":{color}[●] " + (f"{times[0]} " if times else "") + d.track
+    if len(d.events) > 1:
+        label += f" ({len(d.events)})"
+    return label
