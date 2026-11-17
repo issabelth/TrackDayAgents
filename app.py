@@ -95,18 +95,24 @@ with st.sidebar:
 
     st.subheader("3. Filtry")
     today = date.today()
-    d_range = st.date_input("Zakres dat", value=(today, today + timedelta(days=365)))
+    FILTER_DEFAULTS = {
+        "f_range": (today, today + timedelta(days=365)), "f_weekdays": [], "f_price": (0, 2000),
+        "f_tracks": [], "f_orgs": [], "f_groups": [], "f_avail": False, "f_hide": False,
+    }
+    for k, v in FILTER_DEFAULTS.items():
+        st.session_state.setdefault(k, v)  # wartości domyślne w jednym miejscu (używa ich też „Wyczyść filtry”)
+    d_range = st.date_input("Zakres dat", key="f_range")
     weekdays = st.pills("Dni tygodnia", list(range(7)), selection_mode="multi", key="f_weekdays",
                         format_func=lambda d: WEEKDAYS[d],
                         help="Np. tylko sobota i niedziela. Nic nie zaznaczone = wszystkie dni.")
-    min_price, max_price = st.slider("Koszt [zł]", 0, 2000, (0, 2000), step=50,
+    min_price, max_price = st.slider("Koszt [zł]", 0, 2000, step=50, key="f_price",
                                      help="Terminy bez podanej ceny są pokazywane zawsze.")
-    track_filter = st.multiselect("Tory", repo.distinct("track"))
-    org_filter = st.multiselect("Organizatorzy", repo.distinct("organizer"))
-    group_filter = st.multiselect("Grupy / poziom", all_groups(repo.list_events()),
+    track_filter = st.multiselect("Tory", repo.distinct("track"), key="f_tracks")
+    org_filter = st.multiselect("Organizatorzy", repo.distinct("organizer"), key="f_orgs")
+    group_filter = st.multiselect("Grupy / poziom", all_groups(repo.list_events()), key="f_groups",
                                   help="Pokazuje tylko wybory (sesja × grupa) z zaznaczonych grup.")
-    only_available = st.checkbox("Tylko z wolnymi miejscami")
-    hide_missing = st.checkbox("Ukryj terminy, których nie ma już na stronie organizatora",
+    only_available = st.checkbox("Tylko z wolnymi miejscami", key="f_avail")
+    hide_missing = st.checkbox("Ukryj terminy, których nie ma już na stronie organizatora", key="f_hide",
                                help="Terminy są zapisywane na stałe. Jeśli kolejne wyszukiwanie nie znajdzie "
                                     "terminu na stronie (odwołany, zdjęty), zostaje on w bazie z adnotacją.")
     def clear_events() -> None:
@@ -419,7 +425,35 @@ with tab_tracks:
             st.error(err)
         st.warning("Nie zapisano zmian - popraw błędy i spróbuj ponownie.")
 
+def reset_filters() -> None:
+    """Przywraca domyślne wartości filtrów z panelu bocznego (ustawione jawnie, żeby odświeżyły się też widżety)."""
+    st.session_state.update(FILTER_DEFAULTS)
+
+
+def active_filters() -> list[str]:
+    out = []
+    if d_from and (d_from, d_to) != FILTER_DEFAULTS["f_range"]:
+        out.append(f"{d_from:%d.%m.%Y} - {d_to:%d.%m.%Y}")
+    if weekdays:
+        out.append(", ".join(WEEKDAYS[d] for d in sorted(weekdays)))
+    if (min_price, max_price) != (0, 2000):
+        out.append(f"{min_price}-{max_price} zł")
+    out += track_filter + org_filter + group_filter
+    if only_available:
+        out.append("z wolnymi miejscami")
+    if hide_missing:
+        out.append("bez zdjętych ze strony")
+    return out
+
+
 with tab_events:
+    with st.container(horizontal=True, vertical_alignment="center"):
+        if active := active_filters():
+            st.markdown(":material/filter_alt: **Filtry:** " + " ".join(f":blue-badge[{f}]" for f in active))
+            st.button("Wyczyść filtry", icon=":material/filter_alt_off:", type="tertiary", on_click=reset_filters)
+        else:
+            st.caption(":material/filter_alt: Filtry (panel boczny) dotyczą kalendarza i listy - teraz pokazane są "
+                       "wszystkie terminy z najbliższego roku.")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Dni z terminami", len({day for d in days for day in d.dates}))
     c2.metric("Wybory (sesja × grupa)", sum(len(d.rows) for d in days))
@@ -430,7 +464,8 @@ with tab_events:
         st.info("Brak zapisanych terminów. Sprawdź listę stron w zakładce Źródła i kliknij **Szukaj terminów** "
                 "(albo wczytaj tryb demo).")
     elif not events:
-        st.info(f"Żaden z zapisanych terminów ({n_saved}) nie pasuje do filtrów - zmień je w panelu bocznym.")
+        st.info(f"Żaden z zapisanych terminów ({n_saved}) nie pasuje do filtrów - zmień je w panelu bocznym "
+                "albo kliknij **Wyczyść filtry**.")
     else:
         colors = track_colors(days)
         on_date = by_date(days)
@@ -512,7 +547,8 @@ with tab_events:
         def go_to(day: date) -> None:
             st.session_state["cal_anchor"] = day
 
-        view_names = {"month": "Miesiąc", "week": "Tydzień", "list": "Harmonogram"}
+        view_names = {"month": ":material/calendar_month: Miesiąc", "week": ":material/view_week: Tydzień",
+                      "list": ":material/list: Lista"}
         with st.container(horizontal=True, vertical_alignment="center"):
             view = st.session_state.get("cal_view", "month")
             anchor: date = st.session_state["cal_anchor"]
@@ -533,6 +569,21 @@ with tab_events:
             for d in days:
                 with st.expander(d.label(), key=f"day_{day_key(d)}"):
                     choices_table(d, compact=False)
+
+            st.subheader("Szczegóły wydarzenia")
+            by_id = {e.id: e for e in events}
+            # Opcje to identyfikatory terminów; gdy filtr usunie wybrany termin, wybór wraca do pierwszego.
+            if st.session_state.get("list_event") not in by_id:
+                st.session_state.pop("list_event", None)
+
+            def event_option(eid: str) -> str:
+                e = by_id[eid]
+                when = f"{e.date_start:%d.%m.%Y}" + (f" - {e.date_end:%d.%m.%Y}" if e.date_end else "")
+                return " · ".join(x for x in (when, e.start_time, e.track, e.name, e.organizer) if x)
+
+            chosen = st.selectbox("Wybierz termin", list(by_id), key="list_event", format_func=event_option)
+            with st.container(border=True):
+                event_details(by_id[chosen])
         else:
             weeks = month_weeks(anchor) if view == "month" else [week_of(anchor)]
             header = st.columns(7, gap="xsmall")
