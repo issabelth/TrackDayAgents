@@ -145,6 +145,11 @@ class TrackDayEvent(BaseModel):
     variants: list[EventVariant] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
     extracted_at: datetime = Field(default_factory=datetime.now)
+    # Uzupełniane przez bazę (nie przez agenta): kiedy termin pierwszy raz znaleziono, kiedy ostatnio
+    # potwierdzono i od kiedy nie ma go już na stronie źródła (odwołany / zdjęty / wyprzedany).
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
+    missing_since: datetime | None = None
 
     @field_validator("url")
     @classmethod

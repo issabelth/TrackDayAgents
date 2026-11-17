@@ -38,21 +38,78 @@ def test_golden_evaluates_to_100_percent():
     assert res.precision == res.recall == 1.0 and not res.mismatches
 
 
-def test_successful_run_replaces_source_events():
+def ev(i, src="a", day=date(2027, 5, 1), org="X", **kw):
+    from trackday.models import TrackDayEvent
+
+    return TrackDayEvent(**({"id": i, "name": i, "date_start": day, "track": "Tor Poznań", "organizer": org,
+                             "url": "https://x.example/", "source_id": src} | kw))
+
+
+def run(events, sources=()):
     from datetime import datetime
 
-    from trackday.models import ScoutReport, SourceReport, TrackDayEvent
+    from trackday.models import SourceReport
 
-    def e(i, src):
-        return TrackDayEvent(id=i, name=i, date_start=date(2027, 5, 1), track="Tor Poznań", organizer="X",
-                             url="https://x.example/", source_id=src)
+    return ScoutReport(run_id=str(id(events)), started_at=datetime.now(), model="m", reference_date=date(2027, 1, 1),
+                       events=events, sources=[SourceReport(source_id=s, source_name=s, ok=ok) for s, ok in sources])
 
-    def run(events, sources):
-        return ScoutReport(run_id=str(len(events)), started_at=datetime.now(), model="m", reference_date=date(2027, 1, 1),
-                           events=events, sources=sources)
 
+def test_saved_events_stay_and_missing_ones_are_marked():
     repo = EventRepository(":memory:")
-    repo.save_run(run([e("old", "a"), e("keep", "a"), e("other", "b")], []))
-    repo.save_run(run([e("keep", "a")], [SourceReport(source_id="a", source_name="A"),
-                                         SourceReport(source_id="b", source_name="B", ok=False)]))
-    assert sorted(x.id for x in repo.list_events()) == ["keep", "other"]  # b nie zadziałało -> jego wpisy zostają
+    repo.save_run(run([ev("old", day=date(2027, 5, 1)), ev("keep", day=date(2027, 5, 2)),
+                       ev("other", "b", day=date(2027, 5, 3))]))
+    repo.save_run(run([ev("keep", day=date(2027, 5, 2))], [("a", True), ("b", False)]))
+    stored = {x.id: x for x in repo.list_events()}
+    assert sorted(stored) == ["keep", "old", "other"]  # nic nie znika z bazy
+    assert stored["old"].missing_since is not None  # udany przebieg źródła a go nie znalazł
+    assert stored["keep"].missing_since is None
+    assert stored["other"].missing_since is None  # źródło b nie zadziałało - brak podstaw do oznaczenia
+    assert [x.id for x in repo.list_events(hide_missing=True)] == ["keep", "other"]
+    # termin wraca na stronę -> znacznik znika
+    repo.save_run(run([ev("old", day=date(2027, 5, 1))], [("a", True)]))
+    assert repo.list_events(date_to=date(2027, 5, 1))[0].missing_since is None
+
+
+def test_repeated_search_updates_instead_of_duplicating():
+    repo = EventRepository(":memory:")
+    repo.save_run(run([ev("id-1", org="Speed Academy", price=500, currency="PLN", price_pln=500, seats_left=10)]))
+    first = repo.list_events()[0]
+    # kolejne wyszukiwanie: model zapisał organizatora inaczej, inne id, brak ceny, mniej miejsc
+    res = repo.save_run(run([ev("id-2", org="SPEED ACADEMY Sp. z o.o.", seats_left=4)]))
+    assert (res.added, res.updated) == (0, 1)
+    [e] = repo.list_events()
+    assert e.id == "id-1" and e.seats_left == 4
+    assert e.price_pln == 500  # cena z poprzedniego zapisu została
+    assert e.first_seen == first.first_seen
+    assert [s for _, s in repo.seat_history("id-1")][-1] == 4
+
+
+def test_other_organizer_or_session_is_a_new_event():
+    repo = EventRepository(":memory:")
+    repo.save_run(run([ev("rano", start_time="09:00")]))
+    res = repo.save_run(run([ev("rano", start_time="14:00"),  # to samo id, ale inna sesja
+                             ev("y", org="Inny Organizator")]))
+    assert (res.added, res.updated) == (2, 0)
+    assert len(repo.list_events()) == 3 and len({e.id for e in repo.list_events()}) == 3
+
+
+def test_price_and_weekday_filters():
+    repo = make_repo()
+    mid = repo.list_events(min_price_pln=400, max_price_pln=600)
+    assert all(e.price_pln is None or 400 <= e.price_pln <= 600 for e in mid)
+    weekend = repo.list_events(weekdays=[5, 6])
+    assert weekend and all(e.date_start.weekday() >= 5 for e in weekend)
+    assert len(weekend) == sum(e.date_start.weekday() >= 5 for e in repo.list_events())
+
+
+def test_old_database_gets_new_column(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as c:
+        c.execute("CREATE TABLE events (id TEXT PRIMARY KEY, date_start TEXT NOT NULL, date_end TEXT, track TEXT "
+                  "NOT NULL, organizer TEXT NOT NULL, price_pln REAL, seats_left INTEGER, data TEXT NOT NULL, "
+                  "first_seen TEXT NOT NULL, last_seen TEXT NOT NULL)")
+    repo = EventRepository(db)
+    repo.save_run(run([ev("a")]))
+    assert repo.list_events(hide_missing=True)[0].id == "a"

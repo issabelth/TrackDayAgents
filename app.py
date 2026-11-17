@@ -23,7 +23,7 @@ from trackday.tools.images import MAX_IMAGES, ImageError, prepare_image
 from trackday.tools.normalize import (COL_ALIASES, COL_COORDS, COL_COUNTRY, COL_LINK, COL_NAME, GMAPS_COLUMN,
                                       TRACK_COLUMNS, build_tracks, default_track_defs, google_maps_url, match_track,
                                       event_id, track_row, tracks_from_rows)
-from trackday.views import all_groups, group_by_day
+from trackday.views import WEEKDAYS, all_groups, group_by_day
 from trackday.storage.db import EventRepository
 
 st.set_page_config(page_title="TrackDay Agents", page_icon="🏍️", layout="wide")
@@ -96,12 +96,19 @@ with st.sidebar:
     st.subheader("3. Filtry")
     today = date.today()
     d_range = st.date_input("Zakres dat", value=(today, today + timedelta(days=365)))
-    max_price = st.slider("Maksymalny koszt [zł]", 0, 2000, 2000, step=50)
+    weekdays = st.pills("Dni tygodnia", list(range(7)), selection_mode="multi", key="f_weekdays",
+                        format_func=lambda d: WEEKDAYS[d],
+                        help="Np. tylko sobota i niedziela. Nic nie zaznaczone = wszystkie dni.")
+    min_price, max_price = st.slider("Koszt [zł]", 0, 2000, (0, 2000), step=50,
+                                     help="Terminy bez podanej ceny są pokazywane zawsze.")
     track_filter = st.multiselect("Tory", repo.distinct("track"))
     org_filter = st.multiselect("Organizatorzy", repo.distinct("organizer"))
     group_filter = st.multiselect("Grupy / poziom", all_groups(repo.list_events()),
                                   help="Pokazuje tylko wybory (sesja × grupa) z zaznaczonych grup.")
     only_available = st.checkbox("Tylko z wolnymi miejscami")
+    hide_missing = st.checkbox("Ukryj terminy, których nie ma już na stronie organizatora",
+                               help="Terminy są zapisywane na stałe. Jeśli kolejne wyszukiwanie nie znajdzie "
+                                    "terminu na stronie (odwołany, zdjęty), zostaje on w bazie z adnotacją.")
     def clear_events() -> None:
         repo.clear()
         st.session_state.pop("report", None)
@@ -143,7 +150,10 @@ st.caption("Jedna lista terminów od wielu organizatorów - dane zebrane przez a
 
 d_from, d_to = (d_range if isinstance(d_range, tuple) and len(d_range) == 2 else (None, None))
 events = repo.list_events(date_from=d_from, date_to=d_to, max_price_pln=None if max_price >= 2000 else max_price,
-                          tracks=track_filter or None, organizers=org_filter or None, only_available=only_available)
+                          min_price_pln=min_price or None, weekdays=weekdays or None,
+                          tracks=track_filter or None, organizers=org_filter or None, only_available=only_available,
+                          hide_missing=hide_missing)
+n_saved = len(repo.list_events())
 days = group_by_day(events, set(group_filter) or None, only_available)
 events = [e for d in days for e in d.events]  # po filtrze grup
 
@@ -256,10 +266,11 @@ with tab_sources:
                 "date_start": day, "date_end": ev.date_end if ev.date_end and ev.date_end > day else None,
                 "start_time": hour, "track_layout": layout, "name": name,
                 "id": event_id(ev.organizer, ev.track, day, extra=f"manual {hour or ''} {layout or ''}".strip())}))
-        repo.upsert_events(keep)
+        res = repo.upsert_events(keep)
         st.session_state.pop(f"manual_result_{src_id}", None)
         st.session_state[f"manual_ver_{src_id}"] = st.session_state.get(f"manual_ver_{src_id}", 0) + 1
-        st.toast(f"Zapisano terminy: {len(keep)} - widać je w zakładce Terminy.")
+        st.toast(f"Zapisano terminy: {res.added} nowych, {res.updated} zaktualizowanych - widać je w zakładce "
+                 "Terminy.")
 
     if not http_sources:
         st.info("Najpierw dodaj stronę organizatora do listy powyżej (np. adres jego wydarzeń na Facebooku).")
@@ -411,12 +422,16 @@ with tab_events:
     c3.metric("Organizatorzy", len({e.organizer for e in events}))
     low = [r for d in days for r in d.rows if isinstance(r["Wolne miejsca"], int) and 0 < r["Wolne miejsca"] < 3]
     c4.metric("Prawie wyprzedane (<3 miejsca)", len(low))
-    if not events:
-        st.info("Brak terminów. Sprawdź listę stron w zakładce Źródła i kliknij **Szukaj terminów** "
-                "(albo wczytaj tryb demo). Jeśli ustawiono filtr grup, żaden wybór do niego nie pasuje.")
+    if not n_saved:
+        st.info("Brak zapisanych terminów. Sprawdź listę stron w zakładce Źródła i kliknij **Szukaj terminów** "
+                "(albo wczytaj tryb demo).")
+    elif not events:
+        st.info(f"Żaden z zapisanych terminów ({n_saved}) nie pasuje do filtrów - zmień je w panelu bocznym.")
     else:
-        st.caption("Jeden wiersz na dzień i tor - rozwiń, aby zobaczyć każdy wybór (wydarzenie, godzina, sesja, "
-                   "grupa) z liczbą wolnych miejsc.")
+        st.caption(f"Pokazano terminy pasujące do filtrów spośród **{n_saved}** zapisanych w bazie. Każde "
+                   "wyszukiwanie dopisuje nowe terminy i aktualizuje już zapisane (bez duplikatów u tego samego "
+                   "organizatora). Jeden wiersz na dzień i tor - rozwiń, aby zobaczyć każdy wybór (wydarzenie, "
+                   "godzina, sesja, grupa) z liczbą wolnych miejsc.")
         for d in days:
             with st.expander(d.label(), key=f"day_{d.day:%Y%m%d}_{hashlib.sha1(d.track.encode()).hexdigest()[:8]}"):
                 st.dataframe(
@@ -447,6 +462,12 @@ with tab_events:
         m3.metric("Pewność ekstrakcji", f"{e.confidence:.0%}")
         m4.metric("Pogoda", "—", help="Agent 3 (Meteorolog) - kolejny etap")
         st.markdown(f"**{e.name}** · [{e.url}]({e.url})")
+        if e.first_seen and e.last_seen:
+            st.caption(f"W bazie od {e.first_seen:%d.%m.%Y %H:%M} · ostatnio potwierdzony na stronie "
+                       f"{e.last_seen:%d.%m.%Y %H:%M}")
+        if e.missing_since:
+            st.warning(f"Ostatnie wyszukiwanie ({e.missing_since:%d.%m.%Y}) nie znalazło już tego terminu na "
+                       "stronie organizatora - mógł zostać odwołany lub zdjęty.")
         if e.price_note:
             st.caption(f"Cena: {e.price_note}")
         if e.issues:

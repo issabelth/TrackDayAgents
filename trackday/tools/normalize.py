@@ -72,6 +72,56 @@ def normalize_organizer(name: str) -> str:
     return _fold(name)
 
 
+def same_organizer(a: str, b: str) -> bool:
+    """Ta sama firma mimo drobnych różnic w zapisie, np. 'Speed Academy' i 'Speed Academy Sp. z o.o.'."""
+    fa, fb = normalize_organizer(a), normalize_organizer(b)
+    if fa == fb:
+        return True
+    short, long_ = sorted((fa, fb), key=len)
+    return len(short) >= 4 and re.search(rf"\b{re.escape(short)}\b", long_) is not None
+
+
+def base_source(source_id: str) -> str:
+    """'manual:abc' -> 'abc' (terminy dodane ręcznie należą do tego samego źródła co strona organizatora)."""
+    return source_id.split(":", 1)[1] if source_id.startswith("manual:") else source_id
+
+
+def same_stored_event(old: TrackDayEvent, new: TrackDayEvent) -> bool:
+    """Czy nowo znaleziony termin to ten sam, który jest już w bazie (aktualizacja, a nie nowy wpis).
+
+    Ten sam organizator + dzień + tor, a do tego nie ma oznak, że to inna sesja tego dnia:
+    inna godzina startu, inna odmiana toru albo inna podstrona tego samego źródła.
+    """
+    if old.date_start != new.date_start or _fold(old.track) != _fold(new.track):
+        return False
+    if not same_organizer(old.organizer, new.organizer):
+        return False
+    if old.start_time and new.start_time and old.start_time != new.start_time:
+        return False
+    lo, ln = (old.track_layout or "").lower().strip(), (new.track_layout or "").lower().strip()
+    same_src = base_source(old.source_id) == base_source(new.source_id)
+    if lo != ln and ((lo and ln) or same_src):
+        return False
+    if same_src and old.source_id == new.source_id and old.url != new.url:
+        return False  # dwie sesje tego dnia, każda na osobnej podstronie
+    return True
+
+
+def merge_stored(old: TrackDayEvent, new: TrackDayEvent) -> TrackDayEvent:
+    """Aktualizacja zapisanego terminu: obowiązują nowe dane, ale pola, których nowe wyszukiwanie nie podało
+    (np. cena widoczna tylko na jednej ze stron), zostają z poprzedniego zapisu. Liczba wolnych miejsc
+    zawsze pochodzi z nowego odczytu - stara mogłaby być nieaktualna."""
+    keep = ["date_end", "start_time", "track_layout", "price", "currency", "price_pln", "price_note",
+            "seats_total", "lat", "lon"]
+    upd = {f: getattr(old, f) for f in keep if getattr(new, f) is None and getattr(old, f) is not None}
+    if upd.get("price") is not None and new.price is None:
+        upd["currency"], upd["price_pln"] = old.currency, old.price_pln
+    if not new.groups and old.groups:
+        upd["groups"] = old.groups
+    upd.update(id=old.id, first_seen=old.first_seen, missing_since=None)
+    return new.model_copy(update=upd)
+
+
 def event_key(organizer: str, track: str, date_start: date) -> str:
     return f"{normalize_organizer(organizer)}|{_fold(track)}|{date_start.isoformat()}"
 

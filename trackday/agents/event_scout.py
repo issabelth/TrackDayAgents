@@ -110,8 +110,10 @@ class EventScoutAgent(BaseAgent[ScoutInput, ScoutReport]):
                    f"{report.duplicates_removed} duplikatów."))
 
         if self.repository is not None:
-            self.repository.save_run(report)
-            report.steps.append(AgentStep(tool="sqlite", detail=f"Zapisano {len(report.events)} wydarzeń w bazie."))
+            saved = self.repository.save_run(report)
+            report.steps.append(AgentStep(
+                tool="sqlite", detail=f"Zapisano w bazie: {saved.added} nowych terminów, {saved.updated} "
+                                      f"zaktualizowanych (już zapisanych u tego samego organizatora)."))
         report.finished_at = datetime.now()
         return report
 

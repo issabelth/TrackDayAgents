@@ -63,6 +63,8 @@ def choice_rows(e: TrackDayEvent, groups: set[str] | None = None, only_available
         "Organizator": e.organizer,
     }
     rows = []
+    notes = "; ".join(([f"nie ma go już na stronie (od {e.missing_since:%d.%m.%Y})"] if e.missing_since else [])
+                      + e.issues)
     if e.variants:
         for v in e.variants:
             if groups and v.group not in groups:
@@ -77,7 +79,7 @@ def choice_rows(e: TrackDayEvent, groups: set[str] | None = None, only_available
                 "Wolne miejsca": _seats(v.seats_left, v.availability_note),
                 "Cena": f"{price:g} {currency}" if price is not None else "-",
                 "Cena [zł]": price if currency == "PLN" else e.price_pln,
-                "Link": e.url, "Uwagi": "; ".join(e.issues),
+                "Link": e.url, "Uwagi": notes,
             })
     else:
         if groups and not groups & set(e.groups):
@@ -93,7 +95,7 @@ def choice_rows(e: TrackDayEvent, groups: set[str] | None = None, only_available
             "Wolne miejsca": seats,
             "Cena": f"{e.price:g} {e.currency}" if e.price is not None else "-",
             "Cena [zł]": e.price_pln,
-            "Link": e.url, "Uwagi": "; ".join(e.issues),
+            "Link": e.url, "Uwagi": notes,
         })
     return rows
 
